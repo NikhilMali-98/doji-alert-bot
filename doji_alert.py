@@ -2,95 +2,89 @@ import time
 import requests
 from binance.client import Client
 
-# 🔹 Binance API (फ्री data साठी API keys लागणार नाहीत)
-client = Client()
-
-# 🔹 Telegram credentials (तुझं working token & chat_id)
+# Telegram settings
 BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
 CHAT_ID = "1343842801"
 
-# 🔹 Alert पाठवण्यासाठी function
-def send_telegram_message(msg):
+# Binance settings
+SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
+    "SOLUSDT", "DOGEUSDT", "TRXUSDT", "DOTUSDT", "MATICUSDT",
+    "LTCUSDT", "BCHUSDT", "AVAXUSDT", "UNIUSDT", "XLMUSDT",
+    "ATOMUSDT", "XMRUSDT", "ETCUSDT", "ICPUSDT", "FILUSDT"
+]
+
+TIMEFRAMES = ["15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
+
+# Initialize Binance client (no API key needed for public data)
+client = Client()
+
+def send_telegram_message(message: str):
+    """Send Telegram notification"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": message}
     try:
-        r = requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        r = requests.post(url, json=payload)
         if r.status_code != 200:
             print("⚠️ Telegram error:", r.text)
-        else:
-            print("✅ Telegram alert sent!")
     except Exception as e:
-        print("⚠️ Telegram Exception:", e)
+        print("⚠️ Telegram send error:", e)
 
-# 🔹 Doji check function (soft logic)
-def is_doji(candle):
-    open_price = float(candle[1])
-    close_price = float(candle[4])
-    high = float(candle[2])
-    low = float(candle[3])
-
-    body = abs(close_price - open_price)
+def is_doji(open_, high, low, close):
+    """Check if candle is doji (strict)"""
+    body = abs(open_ - close)
     candle_range = high - low
+    return body <= 0.2 * candle_range  # stricter doji
 
-    if candle_range == 0:
-        return False
+def check_breakout(symbol, interval):
+    """Check for 2 dojis + breakout"""
+    try:
+        candles = client.get_klines(symbol=symbol, interval=interval, limit=5)
+        # last 5 candles
+        ohlc = [(float(c[1]), float(c[2]), float(c[3]), float(c[4])) for c in candles]
 
-    # body छोटा असेल तर Doji मानायचा
-    return body <= (0.2 * candle_range)
+        # last 3 candles
+        c1, c2, c3 = ohlc[-3], ohlc[-2], ohlc[-1]
 
-# 🔹 Breakout check
-def check_breakout(symbol, tf):
-    candles = client.get_klines(symbol=symbol, interval=tf, limit=5)
-    last3 = candles[-3:]
+        # check 2 dojis back to back
+        if is_doji(*c1) and is_doji(*c2):
+            doji_high = max(c1[1], c2[1])
+            doji_low = min(c1[2], c2[2])
 
-    c1, c2, c3 = last3
-
-    if is_doji(c1) and is_doji(c2):  # दोन doji back-to-back
-        c2_high = float(c2[2])
-        c2_low = float(c2[3])
-        c3_open = float(c3[1])
-        c3_close = float(c3[4])
-
-        # Breakout वर alert
-        if c3_close > c2_high:
-            msg = f"""
-🚨 Doji Breakout Alert 🚨
+            # breakout by last candle
+            if c3[3] > doji_high:  # breakout UP
+                msg = f"""
+🚨 Doji Breakout Alert
 Coin: {symbol}
-TF: {tf}
+TF: {interval}
 Direction: UP 🚀
-Range: {c2_low} - {c2_high}
-Price: {c3_close}
+Doji Range: {doji_low:.2f} - {doji_high:.2f}
+Price: {c3[3]:.2f}
 """
-            print(msg)
-            send_telegram_message(msg)
+                print(msg)
+                send_telegram_message(msg)
 
-        elif c3_close < c2_low:
-            msg = f"""
-🚨 Doji Breakout Alert 🚨
+            elif c3[3] < doji_low:  # breakout DOWN
+                msg = f"""
+🚨 Doji Breakout Alert
 Coin: {symbol}
-TF: {tf}
+TF: {interval}
 Direction: DOWN 🔻
-Range: {c2_low} - {c2_high}
-Price: {c3_close}
+Doji Range: {doji_low:.2f} - {doji_high:.2f}
+Price: {c3[3]:.2f}
 """
-            print(msg)
-            send_telegram_message(msg)
+                print(msg)
+                send_telegram_message(msg)
 
-# 🔹 Main loop
+    except Exception as e:
+        print(f"⚠️ Error checking {symbol} {interval}:", e)
+
 if __name__ == "__main__":
     print("🚀 Doji Breakout Bot Started...")
-
-    SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
-        "DOGEUSDT", "SOLUSDT", "TRXUSDT", "DOTUSDT", "MATICUSDT",
-        "LTCUSDT", "SHIBUSDT", "AVAXUSDT", "UNIUSDT", "ATOMUSDT",
-        "LINKUSDT", "XLMUSDT", "ETCUSDT", "XMRUSDT", "BCHUSDT"]
-    TIMEFRAMES = ["5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
-
     while True:
-        try:
-            for sym in SYMBOLS:
-                for tf in TIMEFRAMES:
-                    check_breakout(sym, tf)
-            time.sleep(60)  # प्रत्येक 1 मिनिटाला check
-        except Exception as e:
-            print("⚠️ Error in loop:", e)
-            time.sleep(10)
+        for sym in SYMBOLS:
+            for tf in TIMEFRAMES:
+                check_breakout(sym, tf)
+
+        print("⏳ Waiting 5 minutes before next scan...")
+        time.sleep(300)  # 5 minutes
