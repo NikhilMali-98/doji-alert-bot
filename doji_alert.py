@@ -83,7 +83,7 @@ if __name__ == "__main__":
         "DOGEUSDT", "SOLUSDT", "TRXUSDT", "DOTUSDT", "MATICUSDT",
         "LTCUSDT", "SHIBUSDT", "AVAXUSDT", "UNIUSDT", "ATOMUSDT",
         "LINKUSDT", "XLMUSDT", "ETCUSDT", "XMRUSDT", "BCHUSDT"]
-    TIMEFRAMES = ["5m", "10m", "15m", "1h", "4h", "1d", "1w"]
+    TIMEFRAMES = ["5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
 
     while True:
         try:
