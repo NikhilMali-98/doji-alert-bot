@@ -79,8 +79,11 @@ Price: {c3_close}
 if __name__ == "__main__":
     print("🚀 Doji Breakout Bot Started...")
 
-    SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
-    TIMEFRAMES = ["5m", "15m", "1h", "4h"]
+    SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
+        "DOGEUSDT", "SOLUSDT", "TRXUSDT", "DOTUSDT", "MATICUSDT",
+        "LTCUSDT", "SHIBUSDT", "AVAXUSDT", "UNIUSDT", "ATOMUSDT",
+        "LINKUSDT", "XLMUSDT", "ETCUSDT", "XMRUSDT", "BCHUSDT"]
+    TIMEFRAMES = ["5m", "10m", "15m", "1h", "4h", "1d", "1w"]
 
     while True:
         try:
