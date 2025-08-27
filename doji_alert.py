@@ -1,64 +1,92 @@
-import requests
 import time
-import threading
+import requests
 from binance.client import Client
-from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
-
-API_KEY = ""
-API_SECRET = ""
-client = Client(API_KEY, API_SECRET)
-
-# Telegram
+# -------------------------------
+# Telegram settings
+# -------------------------------
 BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
-CHAT_IDS = ["1343842801"]  # add multiple chat IDs here
+CHAT_IDS =  ["1343842801"] 
 
-# Timeframes
+# -------------------------------
+# Binance settings
+# -------------------------------
+SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
+    "SOLUSDT", "DOGEUSDT", "TRXUSDT", "DOTUSDT", "MATICUSDT",
+    "LTCUSDT", "BCHUSDT", "AVAXUSDT", "UNIUSDT", "XLMUSDT",
+    "ATOMUSDT", "XMRUSDT", "ETCUSDT", "ICPUSDT", "FILUSDT"
+]
+
+# Keep all your timeframes
 TIMEFRAMES = ["15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
 
-# Store already alerted signals
+# -------------------------------
+# Initialize Binance client
+# -------------------------------
+client = Client()
+
+# -------------------------------
+# Alert cache and thread lock
+# -------------------------------
 alerted = set()
 lock = threading.Lock()
 
-def send_telegram_message(message):
+# Track last candle close times for each symbol+timeframe
+last_candle_times = {}
+
+# -------------------------------
+# Functions
+# -------------------------------
+def send_telegram_message(message: str):
+    """Send Telegram message to all chat IDs"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     for chat_id in CHAT_IDS:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        payload = {"chat_id": chat_id, "text": message}
         try:
-            requests.post(url, data=payload)
+            r = requests.post(url, json=payload, timeout=10)
+            if r.status_code != 200:
+                print(f"⚠️ Telegram error for {chat_id}:", r.text)
         except Exception as e:
-            print("Telegram Error:", e)
+            print(f"⚠️ Telegram send error for {chat_id}:", e)
 
-# Doji check (body very small)
-def is_doji(o, h, l, c, threshold=0.1):
-    body = abs(c - o)
-    rng = h - l if h - l != 0 else 1
-    return (body / rng) <= threshold
+def is_doji(open_, high, low, close):
+    """Check if candle is strict doji"""
+    body = abs(open_ - close)
+    candle_range = high - low
+    return body <= 0.2 * candle_range
 
-def check_breakout(symbol, interval):
+def check_breakout(symbol, interval, alerts):
+    """Check 2 dojis + breakout (body breakout logic)"""
     try:
-        klines = client.get_klines(symbol=symbol, interval=interval, limit=5)
-        if len(klines) < 3:
-            return None
+        candles = client.get_klines(symbol=symbol, interval=interval, limit=5)
+        ohlc = [(float(c[1]), float(c[2]), float(c[3]), float(c[4]), int(c[6])) for c in candles]
 
-        # Take last 3 candles
-        c1, c2, c3 = klines[-3], klines[-2], klines[-1]
+        c1, c2, c3 = ohlc[-3], ohlc[-2], ohlc[-1]
+        candle_close_time = c3[4]
 
-        o1, h1, l1, c1c = float(c1[1]), float(c1[2]), float(c1[3]), float(c1[4])
-        o2, h2, l2, c2c = float(c2[1]), float(c2[2]), float(c2[3]), float(c2[4])
-        o3, h3, l3, c3c = float(c3[1]), float(c3[2]), float(c3[3]), float(c3[4])
+        # Reset alerts if new candle
+        key_time = (symbol, interval)
+        with lock:
+            if key_time not in last_candle_times or last_candle_times[key_time] != candle_close_time:
+                alerted_copy = alerted.copy()
+                for a in alerted_copy:
+                    if a[0] == symbol and a[1] == interval:
+                        alerted.remove(a)
+                last_candle_times[key_time] = candle_close_time
 
-        # check if 2 dojis formed
-        if is_doji(o1, h1, l1, c1c) and is_doji(o2, h2, l2, c2c):
-            # Doji body range
-            doji_high = max(o1, c1c, o2, c2c)
-            doji_low = min(o1, c1c, o2, c2c)
+        # Check doji breakout logic
+        if is_doji(*c1[:4]) and is_doji(*c2[:4]):
+            # Body high/low (open & close only)
+            doji_body_high = max(c1[0], c1[3], c2[0], c2[3])
+            doji_body_low = min(c1[0], c1[3], c2[0], c2[3])
 
             direction = None
-            # check breakout when current candle tries to break doji body
-            if o3 > doji_high or c3c > doji_high:
+            if c3[3] > doji_body_high:   # Break above body
                 direction = "UP 🚀"
-            elif o3 < doji_low or c3c < doji_low:
+            elif c3[3] < doji_body_low:  # Break below body
                 direction = "DOWN 🔻"
 
             if direction:
@@ -66,39 +94,42 @@ def check_breakout(symbol, interval):
                 with lock:
                     if key not in alerted:
                         msg = f"""
-🚨 Doji Breakout Alert
+🚨 Alert 🚨
 Coin: {symbol}
 TF: {interval}
 Direction: {direction}
-Doji Body Range: {doji_low:.2f} - {doji_high:.2f}
-Price: {c3c:.2f}
+Doji Body Range: {doji_body_low:.2f} - {doji_body_high:.2f}
+Price: {c3[3]:.2f}
 """
-                        send_telegram_message(msg)
+                        alerts.append(msg)
                         alerted.add(key)
 
     except Exception as e:
-        print(f"Error in {symbol}-{interval}:", e)
+        print(f"⚠️ Error checking {symbol} {interval}: {e}")
 
-def worker(symbol):
-    while True:
-        for tf in TIMEFRAMES:
-            check_breakout(symbol, tf)
-        time.sleep(5 * 60)  # run every 5 minutes
-
-def run_bot(symbols):
-    threads = []
-    for sym in symbols:
-        t = threading.Thread(target=worker, args=(sym,))
-        t.start()
-        threads.append(t)
-
+# -------------------------------
+# Main loop
+# -------------------------------
 if __name__ == "__main__":
-    SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT",
-               "XRPUSDT", "ADAUSDT", "SOLUSDT", 
-               "DOGEUSDT", "TRXUSDT", "DOTUSDT", 
-               "MATICUSDT", "LTCUSDT", "BCHUSDT", 
-               "AVAXUSDT", "UNIUSDT", "XLMUSDT", 
-               "ATOMUSDT", "XMRUSDT", "ETCUSDT",
-               "ICPUSDT", "FILUSDT"]  # add more pairs
-    run_bot(SYMBOLS)
-   
+    print("🚀 Doji Breakout Bot Started...")
+
+    # Send startup test message
+    send_telegram_message("🚀 Doji Breakout Bot is online and running!")
+
+    while True:
+        alerts = []
+
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            for sym in SYMBOLS:
+                for tf in TIMEFRAMES:
+                    executor.submit(check_breakout, sym, tf, alerts)
+
+        if alerts:
+            send_telegram_message("\n".join(alerts))
+            print(f"✅ Alerts sent: {len(alerts)}")
+        else:
+            print("⏳ No breakout detected this cycle.")
+
+        print("⏳ Waiting 5 minutes before next scan...")
+        time.sleep(300)
+
