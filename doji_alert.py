@@ -12,7 +12,13 @@ SYMBOLS = [
     'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'ADAUSDT', 'TRXUSDT'
 ]
 
-TIMEFRAMES = ["15m", "1h", "4h", "1d", "1w", "1M"]
+SYMBOL_TIMEFRAMES = {
+    'BTCUSDT': ["5m", "15m", "1h", "4h", "1d", "1w", "1M"],
+    'ETHUSDT': ["5m", "15m", "1h", "4h", "1d", "1w", "1M"],
+    'SOLUSDT': ["5m", "15m", "1h", "4h", "1d", "1w", "1M"],
+}
+
+DEFAULT_TIMEFRAMES = ["15m", "1h", "4h", "1d", "1w", "1M"]
 
 client = Client()
 alerted = set()
@@ -26,9 +32,9 @@ def send_telegram_message(message: str):
         try:
             r = requests.post(url, json=payload, timeout=10)
             if r.status_code != 200:
-                print(f"Telegram error for {chat_id}:", r.text)
+                print(f"⚠️ Telegram error for {chat_id}:", r.text)
         except Exception as e:
-            print(f"Telegram send error for {chat_id}:", e)
+            print(f"⚠️ Telegram send error for {chat_id}:", e)
 
 def is_doji(open_, high, low, close):
     body = abs(open_ - close)
@@ -67,18 +73,18 @@ def check_breakout(symbol, interval, alerts):
                 with lock:
                     if key not in alerted:
                         msg = f"""
-🚨 Doji Body Breakout 🚨
+🚨  Alert  🚨 
 Coin: {symbol.replace("USDT", "USD")}
 TF: {interval}
 Direction: {direction}
-Body Range: {doji_body_low:.2f} - {doji_body_high:.2f}
+Doji Body Range: {doji_body_low:.2f} - {doji_body_high:.2f}
 Price: {c3[3]:.2f}
 """
                         alerts.append(msg)
                         alerted.add(key)
 
     except Exception as e:
-        print(f"Error checking {symbol} {interval}: {e}")
+        print(f"⚠️ Error checking {symbol} {interval}: {e}")
 
 if __name__ == "__main__":
     print("🚀 Doji Breakout Bot Started...")
@@ -88,7 +94,8 @@ if __name__ == "__main__":
         alerts = []
         with ThreadPoolExecutor(max_workers=12) as executor:
             for sym in SYMBOLS:
-                for tf in TIMEFRAMES:
+                tfs = SYMBOL_TIMEFRAMES.get(sym, DEFAULT_TIMEFRAMES)
+                for tf in tfs:
                     executor.submit(check_breakout, sym, tf, alerts)
 
         if alerts:
