@@ -3,6 +3,7 @@ import requests
 from binance.client import Client
 from concurrent.futures import ThreadPoolExecutor
 import threading
+from datetime import datetime, timedelta, timezone
 
 BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
 CHAT_IDS = ["1343842801"]
@@ -25,6 +26,8 @@ alerted = set()
 lock = threading.Lock()
 last_candle_times = {}
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
 def send_telegram_message(message: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     for chat_id in CHAT_IDS:
@@ -40,7 +43,7 @@ def is_doji(open_, high, low, close):
     body = abs(open_ - close)
     candle_range = high - low
     if candle_range == 0:  
-        return True, True  # ⚡ prime condition
+        return True, True
     return body <= 0.2 * candle_range, False
 
 def check_breakout(symbol, interval, alerts):
@@ -77,17 +80,11 @@ def check_breakout(symbol, interval, alerts):
                 key = (symbol, interval, direction)
                 with lock:
                     if key not in alerted:
+                        now = datetime.now(IST).strftime("%Y-%m-%d %H:%M")
                         if prime1 or prime2:
-                            # 🔥 Short Prime Alert
-                            msg = f"🔥 PRIME ALERT 🔥\n{symbol.replace('USDT','USD')} | {interval} | {direction}\n{doji_body_low:.2f} → {c3[3]:.2f}"
+                            msg = f"🔥 PRIME ALERT 🔥\n{symbol.replace('USDT','USD')} | {interval} | {direction}\nRange: {doji_body_low:.2f}-{doji_body_high:.2f} | Price: {c3[3]:.2f}\n🕒 {now} IST"
                         else:
-                            # 🚨 Normal Alert
-                            msg = f"""🚨 Alert 🚨
-Coin: {symbol.replace("USDT", "USD")}
-TF: {interval}
-Direction: {direction}
-Range: {doji_body_low:.2f} - {doji_body_high:.2f}
-Price: {c3[3]:.2f}"""
+                            msg = f"🚨 {symbol.replace('USDT','USD')} | {interval} | {direction}\nRange: {doji_body_low:.2f}-{doji_body_high:.2f} | Price: {c3[3]:.2f}\n🕒 {now} IST"
                         alerts.append(msg)
                         alerted.add(key)
 
@@ -107,7 +104,7 @@ if __name__ == "__main__":
                     executor.submit(check_breakout, sym, tf, alerts)
 
         if alerts:
-            send_telegram_message("\n".join(alerts))
+            send_telegram_message("\n\n".join(alerts))
             print(f"✅ Alerts sent: {len(alerts)}")
         else:
             print("⏳ No breakout detected this cycle.")
