@@ -23,12 +23,12 @@ CRYPTO_SYMBOLS = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
 CRYPTO_TIMEFRAMES = ["15m","30m","1h","2h","4h","1d"]
 SPECIAL_5M = ["BTCUSDT","ETHUSDT","SOLUSDT"]
 
-# 📌 NSE Stocks + Indices + Sensex + Bankex + Gold
+# 📌 NSE Stocks + Indices + Sensex + Bankex
 INDIAN_SYMBOLS = [
     "RELIANCE.NS","HDFCBANK.NS","TCS.NS","INFY.NS","ICICIBANK.NS",
     "SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS","LT.NS","HINDUNILVR.NS",
     "AXISBANK.NS","ITC.NS","BAJFINANCE.NS","WIPRO.NS","MARUTI.NS",
-    "^NSEI","^NSEBANK","^BSESN","^BSEBANK","GC=F"  # NIFTY, BANKNIFTY, SENSEX, BANKEX, Gold Futures
+    "^NSEI","^NSEBANK","^BSESN","^BSEBANK"  # NIFTY, BANKNIFTY, SENSEX, BANKEX
 ]
 
 # 📌 Indian Timeframes
@@ -64,7 +64,7 @@ def get_crypto_data(symbol, interval, limit=10):
 # Function: Fetch Indian Stock OHLC
 def get_indian_data(symbol, interval="15m", limit=20):
     try:
-        df = yf.download(tickers=symbol, period="6mo", interval=interval)
+        df = yf.download(tickers=symbol, period="6mo", interval=interval, progress=False)
         df = df.tail(limit)
         df.reset_index(inplace=True)
         df.rename(columns={"Open":"open","High":"high","Low":"low","Close":"close"}, inplace=True)
@@ -91,12 +91,14 @@ def analyze_data(df, symbol, tf, market="crypto"):
     
     last5 = df.tail(5).reset_index(drop=True)
     dojis = []
-    for i in range(4):
+    for i in range(4):  # check last 4 candles
         res = is_doji(last5.iloc[i])
         if res: dojis.append(res)
     
-    if len(dojis) >= 2:
-        last = last5.iloc[-1]
+    # ✅ Prime confirmation = Last candle must not be doji
+    last = last5.iloc[-1]
+    last_doji = is_doji(last)
+    if len(dojis) >= 2 and not last_doji:
         prev = last5.iloc[:-1]
 
         direction = None
@@ -110,10 +112,14 @@ def analyze_data(df, symbol, tf, market="crypto"):
             now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
             rng = f"{round(prev['open'].min(),2)} - {round(prev['close'].max(),2)}"
 
+            # Separator
+            sep = "\n━━━━━━━━━━━━━━━✦✧✦━━━━━━━━━━━━━━━\n"
+
+            # Prime message highlight
             if "prime" in dojis:
-                msg = f"🔥 PRIME BREAKOUT 🔥\n\n"
+                msg = f"🔥 PRIME BREAKOUT 🔥{sep}\n"
             else:
-                msg = "🚨 "
+                msg = f"🚨 Alert {sep}\n"
 
             # Symbol adjust
             if market == "crypto":
@@ -123,8 +129,7 @@ def analyze_data(df, symbol, tf, market="crypto"):
                            .replace("^NSEI","NIFTY") \
                            .replace("^NSEBANK","BANKNIFTY") \
                            .replace("^BSESN","SENSEX") \
-                           .replace("^BSEBANK","BANKEX") \
-                           .replace("GC=F","GOLD")
+                           .replace("^BSEBANK","BANKEX")
 
             msg += f"{sym} | {tf} | {direction}\n"
             msg += f"Range: {rng} | Price: {round(last['close'],2)}\n"
