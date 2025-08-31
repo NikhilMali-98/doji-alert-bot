@@ -1,7 +1,7 @@
 import pandas as pd
 import time
 from binance.client import Client
-from nsepython import nse_eq, nse_index
+from nsepython import nse_eq
 import datetime as dt
 
 # Binance client (for crypto)
@@ -9,9 +9,7 @@ client = Client()
 
 # Config
 CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT", "DOTUSDT", "LTCUSDT"]
-INDIAN_INDICES = ["NIFTY 50", "NIFTY BANK", "SENSEX", "BANKEX"]
-
-# Top 20 Indian stocks
+INDIAN_INDICES = ["NIFTY", "BANKNIFTY", "SENSEX", "BANKEX"]   # FIX: NSE uses short names
 INDIAN_TOP20 = [
     "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK",
     "SBIN","HINDUNILVR","BHARTIARTL","KOTAKBANK","ITC",
@@ -44,13 +42,13 @@ def fetch_crypto_data(symbol, interval="15m", limit=50):
 # ---------------- Indian fetch ----------------
 def fetch_indian_data(symbol, interval="15m"):
     try:
-        if symbol in INDIAN_INDICES:
-            data = nse_index(symbol)
-        else:
-            data = nse_eq(symbol)
+        data = nse_eq(symbol)   # FIX: single fetch for both stocks and index
+
+        if not data or "grapthData" not in data:
+            return pd.DataFrame()
 
         candles = []
-        for row in data.get("grapthData", []):
+        for row in data["grapthData"]:
             ts, price = row
             candles.append({
                 "datetime": pd.to_datetime(ts, unit="ms"),
@@ -59,6 +57,8 @@ def fetch_indian_data(symbol, interval="15m"):
                 "low": price,
                 "close": price
             })
+        if not candles:
+            return pd.DataFrame()
         df = pd.DataFrame(candles).set_index("datetime")
         return df
     except Exception as e:
