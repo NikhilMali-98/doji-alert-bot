@@ -25,10 +25,13 @@ INDIAN_SYMBOLS = [
 
 # Timeframes
 CRYPTO_TIMEFRAMES = ["5m", "15m", "1h", "4h", "1d", "1w", "1M"]
-INDIAN_TIMEFRAMES = ["10m", "15m", "1h", "4h", "1d", "1w", "1M"]
+INDIAN_TIMEFRAMES = ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
 
 # Doji threshold
 DOJI_THRESHOLD = 0.1  # %
+
+# Separator (half length for neatness)
+SEPARATOR = "━━━━━✦✧✦━━━━━"
 
 # ============================================
 
@@ -82,16 +85,16 @@ def is_doji(open_price, close_price, high, low):
     candle_range = high - low
     return "doji" if (body / candle_range * 100) < DOJI_THRESHOLD else None
 
-# ========== PROCESS CANDLE ==========
-def process_candles(symbol, df, bot_token, chat_ids, market_type):
+# ========== PROCESS CANDLE (returns msg instead of sending) ==========
+def process_candles(symbol, df, market_type):
     if df is None or len(df) < 2:
-        return
+        return None
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
     doji_type = is_doji(prev["open"], prev["close"], prev["high"], prev["low"])
     if not doji_type:
-        return
+        return None
 
     if ((last["close"] > prev["high"]) or (last["close"] < prev["low"])):
         direction = "UP 🚀" if last["close"] > prev["high"] else "DOWN 🔻"
@@ -104,27 +107,44 @@ def process_candles(symbol, df, bot_token, chat_ids, market_type):
 
         msg += f"{symbol} | {direction}\n"
         msg += f"Range: {prev['low']}-{prev['high']} | Price: {last['close']}\n"
-        msg += f"🕒 {ts}\n"
-        msg += "━━━━━━━━━━━━━━━✦✧✦━━━━━━━━━━━━━━━"
-        send_telegram_message(bot_token, chat_ids, msg)
+        msg += f"🕒 {ts}"
+        return msg
+    return None
 
-# ========== MAIN LOOP ==========
+# ========== MAIN LOOP WITH BATCHING ==========
 def main():
     while True:
+        crypto_alerts = []
+        india_alerts = []
+
         # Crypto
         for sym in CRYPTO_SYMBOLS:
             for tf in CRYPTO_TIMEFRAMES:
                 df = get_crypto_data(sym, tf)
-                process_candles(sym, df, CRYPTO_BOT_TOKEN, CRYPTO_CHAT_IDS, "CRYPTO")
+                alert = process_candles(f"{sym} [{tf}]", df, "CRYPTO")
+                if alert:
+                    crypto_alerts.append(alert)
                 time.sleep(1)
 
         # Indian
         for sym in INDIAN_SYMBOLS:
             df = get_indian_data(sym)
-            process_candles(sym, df, INDIA_BOT_TOKEN, INDIA_CHAT_IDS, "INDIA")
+            alert = process_candles(sym, df, "INDIA")
+            if alert:
+                india_alerts.append(alert)
             time.sleep(1)
 
-        time.sleep(60)  # run every min
+        # Send batch messages (only if alerts exist)
+        if crypto_alerts:
+            batch_msg = f"\n{SEPARATOR}\n".join(crypto_alerts)
+            send_telegram_message(CRYPTO_BOT_TOKEN, CRYPTO_CHAT_IDS, f"📊 CRYPTO BATCH ALERTS 📊\n\n{batch_msg}\n{SEPARATOR}")
+
+        if india_alerts:
+            batch_msg = f"\n{SEPARATOR}\n".join(india_alerts)
+            send_telegram_message(INDIA_BOT_TOKEN, INDIA_CHAT_IDS, f"📊 INDIA BATCH ALERTS 📊\n\n{batch_msg}\n{SEPARATOR}")
+
+        # Run every 5 min
+        time.sleep(300)
 
 if __name__ == "__main__":
     main()
