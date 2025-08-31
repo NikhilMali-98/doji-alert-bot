@@ -1,113 +1,162 @@
-import time
 import requests
-from binance.client import Client
-from concurrent.futures import ThreadPoolExecutor
-import threading
-from datetime import datetime, timedelta, timezone
+import pandas as pd
+import datetime
+import pytz
+import time
+import yfinance as yf
 
-BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
-CHAT_IDS = ["1343842801"]
+# 📌 Telegram Details
+CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
+CRYPTO_CHAT_IDS = ["1343842801"]
 
-SYMBOLS = [
-    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
-    'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'ADAUSDT', 'TRXUSDT'
+INDIA_BOT_TOKEN = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
+INDIA_CHAT_IDS = ["1343842801"]
+
+# 📌 Binance API
+CRYPTO_API = "https://api.binance.com/api/v3/klines"
+
+# 📌 Crypto List (Top 10)
+CRYPTO_SYMBOLS = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
+                  "DOGEUSDT","ADAUSDT","AVAXUSDT","DOTUSDT","MATICUSDT"]
+
+# 📌 Crypto Timeframes
+CRYPTO_TIMEFRAMES = ["15m","30m","1h","2h","4h","1d"]
+SPECIAL_5M = ["BTCUSDT","ETHUSDT","SOLUSDT"]
+
+# 📌 NSE Stocks + Indices + Sensex + Bankex + Gold
+INDIAN_SYMBOLS = [
+    "RELIANCE.NS","HDFCBANK.NS","TCS.NS","INFY.NS","ICICIBANK.NS",
+    "SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS","LT.NS","HINDUNILVR.NS",
+    "AXISBANK.NS","ITC.NS","BAJFINANCE.NS","WIPRO.NS","MARUTI.NS",
+    "^NSEI","^NSEBANK","^BSESN","^BSEBANK","GC=F"  # NIFTY, BANKNIFTY, SENSEX, BANKEX, Gold Futures
 ]
 
-SYMBOL_TIMEFRAMES = {
-    'BTCUSDT': ["5m", "15m", "1h", "4h", "1d", "1w", "1M"],
-    'ETHUSDT': ["5m", "15m", "1h", "4h", "1d", "1w", "1M"],
-    'SOLUSDT': ["5m", "15m", "1h", "4h", "1d", "1w", "1M"],
-}
+# 📌 Indian Timeframes
+INDIA_TIMEFRAMES = ["10m","15m","1h","3h","4h","1d","1w","1mo"]
 
-DEFAULT_TIMEFRAMES = ["15m", "1h", "4h", "1d", "1w", "1M"]
-
-client = Client()
-alerted = set()
-lock = threading.Lock()
-last_candle_times = {}
-
-IST = timezone(timedelta(hours=5, minutes=30))
-
-def send_telegram_message(message: str):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    for chat_id in CHAT_IDS:
-        payload = {"chat_id": chat_id, "text": message}
+# Function: Send Telegram Msg
+def send_telegram(bot_token, chat_ids, message):
+    for chat_id in chat_ids:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
         try:
-            r = requests.post(url, json=payload, timeout=10)
-            if r.status_code != 200:
-                print(f"⚠️ Telegram error for {chat_id}:", r.text)
+            requests.post(url, data=payload)
         except Exception as e:
-            print(f"⚠️ Telegram send error for {chat_id}:", e)
+            print("Telegram Error:", e)
 
-def is_doji(open_, high, low, close):
-    body = abs(open_ - close)
-    candle_range = high - low
-    if candle_range == 0:  
-        return True, True
-    return body <= 0.2 * candle_range, False
-
-def check_breakout(symbol, interval, alerts):
+# Function: Fetch Crypto OHLC
+def get_crypto_data(symbol, interval, limit=10):
     try:
-        candles = client.get_klines(symbol=symbol, interval=interval, limit=5)
-        ohlc = [(float(c[1]), float(c[2]), float(c[3]), float(c[4]), int(c[6])) for c in candles]
-
-        c1, c2, c3 = ohlc[-3], ohlc[-2], ohlc[-1]
-        candle_close_time = c3[4]
-
-        key_time = (symbol, interval)
-        with lock:
-            if key_time not in last_candle_times or last_candle_times[key_time] != candle_close_time:
-                alerted_copy = alerted.copy()
-                for a in alerted_copy:
-                    if a[0] == symbol and a[1] == interval:
-                        alerted.remove(a)
-                last_candle_times[key_time] = candle_close_time
-
-        d1, prime1 = is_doji(*c1[:4])
-        d2, prime2 = is_doji(*c2[:4])
-
-        if d1 and d2:
-            doji_body_high = max(c1[0], c1[3], c2[0], c2[3])
-            doji_body_low = min(c1[0], c1[3], c2[0], c2[3])
-
-            direction = None
-            if c3[3] > doji_body_high:
-                direction = "UP 🚀"
-            elif c3[3] < doji_body_low:
-                direction = "DOWN 🔻"
-
-            if direction:
-                key = (symbol, interval, direction)
-                with lock:
-                    if key not in alerted:
-                        now = datetime.now(IST).strftime("%Y-%m-%d %H:%M")
-                        if prime1 or prime2:
-                            msg = f"🔥 PRIME ALERT 🔥\n{symbol.replace('USDT','USD')} | {interval} | {direction}\nRange: {doji_body_low:.2f}-{doji_body_high:.2f} | Price: {c3[3]:.2f}\n🕒 {now} IST"
-                        else:
-                            msg = f"🚨 {symbol.replace('USDT','USD')} | {interval} | {direction}\nRange: {doji_body_low:.2f}-{doji_body_high:.2f} | Price: {c3[3]:.2f}\n🕒 {now} IST"
-                        alerts.append(msg)
-                        alerted.add(key)
-
+        url = f"{CRYPTO_API}?symbol={symbol}&interval={interval}&limit={limit}"
+        data = requests.get(url).json()
+        df = pd.DataFrame(data, columns=[
+            "time","open","high","low","close","volume","_","__","___","____","_____","______"
+        ])
+        df["open"] = df["open"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df["close"] = df["close"].astype(float)
+        return df
     except Exception as e:
-        print(f"⚠️ Error checking {symbol} {interval}: {e}")
+        print(f"Crypto Fetch Error {symbol}:", e)
+        return None
+
+# Function: Fetch Indian Stock OHLC
+def get_indian_data(symbol, interval="15m", limit=20):
+    try:
+        df = yf.download(tickers=symbol, period="6mo", interval=interval)
+        df = df.tail(limit)
+        df.reset_index(inplace=True)
+        df.rename(columns={"Open":"open","High":"high","Low":"low","Close":"close"}, inplace=True)
+        return df
+    except Exception as e:
+        print(f"Indian Data Fetch Error {symbol}:", e)
+        return None
+
+# Function: Detect Doji
+def is_doji(candle):
+    try:
+        body = abs(candle["close"] - candle["open"])
+        candle_range = candle["high"] - candle["low"]
+        if candle_range == 0:
+            return "prime"
+        return body <= (0.2 * candle_range)
+    except:
+        return False
+
+# Function: Analyze
+def analyze_data(df, symbol, tf, market="crypto"):
+    if df is None or len(df) < 6:
+        return None
+    
+    last5 = df.tail(5).reset_index(drop=True)
+    dojis = []
+    for i in range(4):
+        res = is_doji(last5.iloc[i])
+        if res: dojis.append(res)
+    
+    if len(dojis) >= 2:
+        last = last5.iloc[-1]
+        prev = last5.iloc[:-1]
+
+        direction = None
+        if last["close"] > prev["close"].max():
+            direction = "UP 🚀"
+        elif last["close"] < prev["close"].min():
+            direction = "DOWN 🔻"
+
+        if direction:
+            tz = pytz.timezone("Asia/Kolkata")
+            now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
+            rng = f"{round(prev['open'].min(),2)} - {round(prev['close'].max(),2)}"
+
+            if "prime" in dojis:
+                msg = f"🔥 PRIME BREAKOUT 🔥\n\n"
+            else:
+                msg = "🚨 "
+
+            # Symbol adjust
+            if market == "crypto":
+                sym = symbol.replace("USDT","USD")
+            else:
+                sym = symbol.replace(".NS","") \
+                           .replace("^NSEI","NIFTY") \
+                           .replace("^NSEBANK","BANKNIFTY") \
+                           .replace("^BSESN","SENSEX") \
+                           .replace("^BSEBANK","BANKEX") \
+                           .replace("GC=F","GOLD")
+
+            msg += f"{sym} | {tf} | {direction}\n"
+            msg += f"Range: {rng} | Price: {round(last['close'],2)}\n"
+            msg += f"🕒 {now} IST"
+
+            if market == "crypto":
+                send_telegram(CRYPTO_BOT_TOKEN, CRYPTO_CHAT_IDS, msg)
+            else:
+                send_telegram(INDIA_BOT_TOKEN, INDIA_CHAT_IDS, msg)
+
+# Main Loop
+def run():
+    while True:
+        # ✅ Crypto always on
+        for sym in CRYPTO_SYMBOLS:
+            for tf in CRYPTO_TIMEFRAMES:
+                df = get_crypto_data(sym, tf)
+                analyze_data(df, sym, tf, market="crypto")
+            if sym in SPECIAL_5M:
+                df = get_crypto_data(sym, "5m")
+                analyze_data(df, sym, "5m", market="crypto")
+
+        # ✅ Indian market alerts only in market hours
+        tz = pytz.timezone("Asia/Kolkata")
+        now = datetime.datetime.now(tz)
+        if now.weekday() < 5 and now.hour >= 9 and (now.hour < 15 or (now.hour == 15 and now.minute <= 30)):
+            for sym in INDIAN_SYMBOLS:
+                for tf in INDIA_TIMEFRAMES:
+                    df = get_indian_data(sym, interval=tf)
+                    analyze_data(df, sym, tf, market="india")
+
+        time.sleep(300)  # run every 5 mins
 
 if __name__ == "__main__":
-    print("🚀 Doji Breakout Bot Started...")
-    send_telegram_message("🚀 Doji Breakout Bot is online and running!")
-
-    while True:
-        alerts = []
-        with ThreadPoolExecutor(max_workers=12) as executor:
-            for sym in SYMBOLS:
-                tfs = SYMBOL_TIMEFRAMES.get(sym, DEFAULT_TIMEFRAMES)
-                for tf in tfs:
-                    executor.submit(check_breakout, sym, tf, alerts)
-
-        if alerts:
-            send_telegram_message("\n\n".join(alerts))
-            print(f"✅ Alerts sent: {len(alerts)}")
-        else:
-            print("⏳ No breakout detected this cycle.")
-
-        print("⏳ Waiting 5 minutes before next scan...")
-        time.sleep(300)
+    run()
