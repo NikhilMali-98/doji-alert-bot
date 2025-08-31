@@ -1,150 +1,123 @@
-import requests
 import pandas as pd
-import datetime
 import time
-from nsepython import nsefetch
+from binance.client import Client
+from nsepython import nse_eq, nse_index
+import datetime as dt
 
-# ================== CONFIG ==================
-# Crypto Bot
-CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
-CRYPTO_CHAT_IDS = ["1343842801"]
+# Binance client (for crypto)
+client = Client()
 
-# Indian Bot
-INDIA_BOT_TOKEN = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
-INDIA_CHAT_IDS = ["1343842801"]
+# Config
+CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "MATICUSDT", "DOTUSDT", "LTCUSDT"]
+INDIAN_INDICES = ["NIFTY 50", "NIFTY BANK", "SENSEX", "BANKEX"]
 
-# Crypto symbols (Binance)
-CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", 
-                  "ADAUSDT", "DOGEUSDT", "MATICUSDT", "LTCUSDT", "DOTUSDT"]
-
-# Indian indices & stocks (NSE symbols)
-INDIAN_SYMBOLS = [
-    "NIFTY 50", "NIFTY BANK", "SENSEX", "BANKEX",
-    "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN"
+# Top 20 Indian stocks
+INDIAN_TOP20 = [
+    "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK",
+    "SBIN","HINDUNILVR","BHARTIARTL","KOTAKBANK","ITC",
+    "LT","ASIANPAINT","BAJFINANCE","MARUTI","AXISBANK",
+    "SUNPHARMA","ULTRACEMCO","TITAN","WIPRO","HCLTECH"
 ]
 
-# Timeframes
-CRYPTO_TIMEFRAMES = ["5m", "15m", "1h", "4h", "1d", "1w", "1M"]
-INDIAN_TIMEFRAMES = ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
+CRYPTO_TFS = ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
+INDEX_TFS = ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
+STOCK_TFS = ["1h", "4h", "1d", "1w", "1M"]
 
-# Doji threshold
-DOJI_THRESHOLD = 0.1  # %
+SEPERATOR = "━━━━━━━━✦✧✦━━━━━━━━"
 
-# Separator (half length for neatness)
-SEPARATOR = "━━━━━✦✧✦━━━━━"
-
-# ============================================
-
-def send_telegram_message(bot_token, chat_ids, message):
-    for chat_id in chat_ids:
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        try:
-            requests.post(url, data={"chat_id": chat_id, "text": message})
-        except Exception as e:
-            print("Telegram Error:", e)
-
-# ========== FETCH CRYPTO DATA ==========
-def get_crypto_data(symbol, interval="15m", limit=50):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+# ---------------- Crypto fetch ----------------
+def fetch_crypto_data(symbol, interval="15m", limit=50):
     try:
-        data = requests.get(url, timeout=10).json()
-        df = pd.DataFrame(data, columns=[
-            "open_time", "open", "high", "low", "close", "volume",
-            "close_time", "qav", "trades", "tbbav", "tbqav", "ignore"
+        klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+        df = pd.DataFrame(klines, columns=[
+            "time","open","high","low","close","volume","close_time",
+            "qav","num_trades","tbbav","tbqav","ignore"
         ])
-        df["open"] = df["open"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
-        df["close"] = df["close"].astype(float)
-        return df
+        df["time"] = pd.to_datetime(df["time"], unit="ms")
+        df.set_index("time", inplace=True)
+        df = df.astype(float)
+        return df[["open","high","low","close","volume"]]
     except Exception as e:
-        print(f"Crypto fetch error {symbol}:", e)
-        return None
+        print(f"Crypto fetch error {symbol}: {e}")
+        return pd.DataFrame()
 
-# ========== FETCH INDIAN DATA ==========
-def get_indian_data(symbol):
+# ---------------- Indian fetch ----------------
+def fetch_indian_data(symbol, interval="15m"):
     try:
-        url = f"https://www.nseindia.com/api/chart-databyindex?index={symbol}&indices=true"
-        data = nsefetch(url)
-        candles = data["grapthData"][-50:]  # last 50 candles
-        df = pd.DataFrame(candles, columns=["time","close"])
-        # Approx O/H/L from tick data (simplified)
-        df["open"] = df["close"].shift(1).fillna(df["close"])
-        df["high"] = df["close"].rolling(3).max()
-        df["low"] = df["close"].rolling(3).min()
+        if symbol in INDIAN_INDICES:
+            data = nse_index(symbol)
+        else:
+            data = nse_eq(symbol)
+
+        candles = []
+        for row in data.get("grapthData", []):
+            ts, price = row
+            candles.append({
+                "datetime": pd.to_datetime(ts, unit="ms"),
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price
+            })
+        df = pd.DataFrame(candles).set_index("datetime")
         return df
     except Exception as e:
-        print(f"Indian fetch error {symbol}:", e)
-        return None
+        print(f"Indian fetch error {symbol}: {e}")
+        return pd.DataFrame()
 
-# ========== DOJI DETECTION ==========
-def is_doji(open_price, close_price, high, low):
-    if high == low:  
-        return "prime"   # Division by zero case → PRIME ALERT
+# ---------------- Doji detection ----------------
+def is_doji(open_price, close_price, high, low, threshold=0.1):
     body = abs(close_price - open_price)
-    candle_range = high - low
-    return "doji" if (body / candle_range * 100) < DOJI_THRESHOLD else None
+    rng = high - low if high - low != 0 else 1
+    return (body / rng) < threshold
 
-# ========== PROCESS CANDLE (returns msg instead of sending) ==========
-def process_candles(symbol, df, market_type):
-    if df is None or len(df) < 2:
-        return None
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+# ---------------- Alert generator ----------------
+def check_alerts():
+    messages = []
 
-    doji_type = is_doji(prev["open"], prev["close"], prev["high"], prev["low"])
-    if not doji_type:
-        return None
+    # Crypto alerts
+    for sym in CRYPTO_SYMBOLS:
+        for tf in CRYPTO_TFS:
+            df = fetch_crypto_data(sym, tf, limit=10)
+            if df.empty: continue
+            last = df.iloc[-1]
+            if is_doji(last["open"], last["close"], last["high"], last["low"]):
+                messages.append(f"🔔 Alert 🔔 | {sym} | TF: {tf}") 
 
-    if ((last["close"] > prev["high"]) or (last["close"] < prev["low"])):
-        direction = "UP 🚀" if last["close"] > prev["high"] else "DOWN 🔻"
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M IST")
+    # Special fast alerts for BTC, ETH, SOL (5m)
+    for sym in ["BTCUSDT","ETHUSDT","SOLUSDT"]:
+        df = fetch_crypto_data(sym, "5m", limit=10)
+        if df.empty: continue
+        last = df.iloc[-1]
+        if is_doji(last["open"], last["close"], last["high"], last["low"]):
+            messages.append(f"⚡ FAST 5m Alert | {sym}")
 
-        if doji_type == "prime":
-            msg = f"🔥🔥 PRIME {market_type} ALERT 🔥🔥\n\n"
-        else:
-            msg = f"🚨 {market_type} ALERT 🚨\n\n"
+    # Indian Index alerts
+    for sym in INDIAN_INDICES:
+        for tf in INDEX_TFS:
+            df = fetch_indian_data(sym, tf)
+            if df.empty: continue
+            last = df.iloc[-1]
+            if is_doji(last["open"], last["close"], last["high"], last["low"]):
+                messages.append(f"🔔 Alert 🔔 | {sym} | TF: {tf}")
 
-        msg += f"{symbol} | {direction}\n"
-        msg += f"Range: {prev['low']}-{prev['high']} | Price: {last['close']}\n"
-        msg += f"🕒 {ts}"
-        return msg
-    return None
+    # Indian Top20 stock alerts
+    for sym in INDIAN_TOP20:
+        for tf in STOCK_TFS:
+            df = fetch_indian_data(sym, tf)
+            if df.empty: continue
+            last = df.iloc[-1]
+            if is_doji(last["open"], last["close"], last["high"], last["low"]):
+                messages.append(f"🔔 Alert 🔔 | {sym} | TF: {tf}")
 
-# ========== MAIN LOOP WITH BATCHING ==========
-def main():
-    while True:
-        crypto_alerts = []
-        india_alerts = []
+    # Batch message format
+    if messages:
+        final_msg = "\n" + f"\n{SEPERATOR}\n".join(messages)
+        prime_msg = f"\n✨ PRIME ALERT ✨\n{final_msg}\n{SEPERATOR}\n"
+        print(prime_msg)
 
-        # Crypto
-        for sym in CRYPTO_SYMBOLS:
-            for tf in CRYPTO_TIMEFRAMES:
-                df = get_crypto_data(sym, tf)
-                alert = process_candles(f"{sym} [{tf}]", df, "CRYPTO")
-                if alert:
-                    crypto_alerts.append(alert)
-                time.sleep(1)
-
-        # Indian
-        for sym in INDIAN_SYMBOLS:
-            df = get_indian_data(sym)
-            alert = process_candles(sym, df, "INDIA")
-            if alert:
-                india_alerts.append(alert)
-            time.sleep(1)
-
-        # Send batch messages (only if alerts exist)
-        if crypto_alerts:
-            batch_msg = f"\n{SEPARATOR}\n".join(crypto_alerts)
-            send_telegram_message(CRYPTO_BOT_TOKEN, CRYPTO_CHAT_IDS, f"📊 CRYPTO BATCH ALERTS 📊\n\n{batch_msg}\n{SEPARATOR}")
-
-        if india_alerts:
-            batch_msg = f"\n{SEPARATOR}\n".join(india_alerts)
-            send_telegram_message(INDIA_BOT_TOKEN, INDIA_CHAT_IDS, f"📊 INDIA BATCH ALERTS 📊\n\n{batch_msg}\n{SEPARATOR}")
-
-        # Run every 5 min
-        time.sleep(300)
-
+# ---------------- Runner ----------------
 if __name__ == "__main__":
-    main()
+    while True:
+        check_alerts()
+        time.sleep(300)  # run every 5 minutes
