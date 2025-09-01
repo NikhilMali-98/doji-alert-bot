@@ -2,7 +2,8 @@ import requests
 import datetime
 import pytz
 import ccxt
-from nsepython import nse_fno, nse_index, nse_eq
+import yfinance as yf
+from nsepython import nse_index, nse_eq
 
 # ================= CONFIG =================
 CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
@@ -12,25 +13,24 @@ CHAT_IDS = ["1343842801"]
 SEPARATOR = "━━━━━✦✧✦━━━━━"
 
 CRYPTO_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
-                  "XRP/USDT", "DOGE/USDT",
-                  "DOT/USDT"]
+                  "XRP/USDT", "DOGE/USDT", "DOT/USDT"]
 
 CRYPTO_TFS = ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
 INDEX_TFS = ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
 STOCK_TFS = ["1h", "4h", "1d", "1w", "1M"]
 
 INDIAN_INDICES = {
-    "NIFTY50": "nifty 50",
-    "BANKNIFTY": "nifty bank",
-    "SENSEX": "S&P BSE SENSEX",
-    "BANKEX": "S&P BSE BANKEX"
+    "NIFTY50": "^NSEI",
+    "BANKNIFTY": "^NSEBANK",
+    "SENSEX": "^BSESN",
+    "BANKEX": "BSE-BANK"
 }
 
 TOP20_STOCKS = [
-    "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK",
-    "KOTAKBANK", "SBIN", "LT", "HINDUNILVR", "BHARTIARTL",
-    "ITC", "AXISBANK", "ASIANPAINT", "MARUTI", "BAJFINANCE",
-    "HCLTECH", "WIPRO", "SUNPHARMA", "TITAN", "POWERGRID"
+    "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
+    "KOTAKBANK.NS", "SBIN.NS", "LT.NS", "HINDUNILVR.NS", "BHARTIARTL.NS",
+    "ITC.NS", "AXISBANK.NS", "ASIANPAINT.NS", "MARUTI.NS", "BAJFINANCE.NS",
+    "HCLTECH.NS", "WIPRO.NS", "SUNPHARMA.NS", "TITAN.NS", "POWERGRID.NS"
 ]
 
 BIG_TFS = ["4h", "1d", "1w", "1M"]
@@ -76,46 +76,57 @@ def check_crypto_alerts():
                 price = close
                 direction = "UP" if price > (low + high) / 2 else "DOWN"
                 body_size = abs(close - open_price)
-                prime = body_size <= (0.001 * price)  # body <=0.1% of price → doji
+                prime = body_size <= (0.001 * price)
                 alerts.append(format_message(symbol.replace("/", ""), tf, direction, low, high, price, prime))
             except Exception as e:
                 print(f"Crypto error {symbol} {tf}: {e}")
     if alerts:
         send_telegram_message(CRYPTO_BOT_TOKEN, CHAT_IDS, "\n".join(alerts))
 
+def get_stock_data_yf(symbol):
+    ticker = yf.Ticker(symbol)
+    hist = ticker.history(period="1d", interval="1m")
+    if hist.empty:
+        return None
+    latest = hist.iloc[-1]
+    open_price = latest["Open"]
+    high = latest["High"]
+    low = latest["Low"]
+    close = latest["Close"]
+    return open_price, high, low, close
+
 def check_indian_alerts():
     alerts = []
-    # 🔹 Indices
-    for name, index_code in INDIAN_INDICES.items():
-        try:
-            data = nse_index(index_code)
-            price = data["lastPrice"]
-            low, high = data["dayLow"], data["dayHigh"]
-            open_price = data["open"]
-            close_price = price
-            direction = "UP" if price > (low + high) / 2 else "DOWN"
-            body_size = abs(close_price - open_price)
-            prime = body_size <= (0.001 * price)
-            for tf in INDEX_TFS:
-                alerts.append(format_message(name, tf, direction, low, high, price, prime))
-        except Exception as e:
-            print(f"Index error {name}: {e}")
 
     # 🔹 Stocks
     for stock in TOP20_STOCKS:
         try:
-            data = nse_eq(stock)
-            price = data["priceInfo"]["lastPrice"]
-            low, high = data["priceInfo"]["intraDayLow"], data["priceInfo"]["intraDayHigh"]
-            open_price = data["priceInfo"]["open"]
-            close_price = price
+            data = get_stock_data_yf(stock)
+            if not data:
+                continue
+            open_price, high, low, price = data
             direction = "UP" if price > (low + high) / 2 else "DOWN"
-            body_size = abs(close_price - open_price)
+            body_size = abs(price - open_price)
             prime = body_size <= (0.001 * price)
             for tf in STOCK_TFS:
                 alerts.append(format_message(stock, tf, direction, low, high, price, prime))
         except Exception as e:
             print(f"Stock error {stock}: {e}")
+
+    # 🔹 Indices
+    for name, ticker in INDIAN_INDICES.items():
+        try:
+            data = get_stock_data_yf(ticker)
+            if not data:
+                continue
+            open_price, high, low, price = data
+            direction = "UP" if price > (low + high) / 2 else "DOWN"
+            body_size = abs(price - open_price)
+            prime = body_size <= (0.001 * price)
+            for tf in INDEX_TFS:
+                alerts.append(format_message(name, tf, direction, low, high, price, prime))
+        except Exception as e:
+            print(f"Index error {name}: {e}")
 
     if alerts:
         send_telegram_message(INDIA_BOT_TOKEN, CHAT_IDS, "\n".join(alerts))
