@@ -1,146 +1,120 @@
-import requests
-import datetime
-import pytz
+import os
+import time
 import ccxt
-import yfinance as yf
-from nsepython import nse_eq, nse_index
+import pandas as pd
+import numpy as np
+import requests
+import pytz
+from datetime import datetime
+from nsepython import nse_index, nse_quote
 
-# ================= CONFIG =================
+# ========== CONFIG ==========
 CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
 INDIA_BOT_TOKEN  = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
 CHAT_IDS = ["1343842801"]
 
-SEPARATOR = "━━━━━✦✧✦━━━━━"
+# Binance client
+exchange = ccxt.binance()
 
-CRYPTO_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT",
-                  "XRP/USDT", "DOGE/USDT", "DOT/USDT"]
+# Timeframes
+CRYPTO_TF = ["15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
+INDICES = ["NIFTY 50", "NIFTY BANK", "SENSEX", "BSE BANKEX"]
+STOCKS = ["RELIANCE", "TCS", "INFY", "HDFCBANK"]
 
-CRYPTO_TFS = ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
-INDEX_TFS = ["15m", "30m", "1h", "4h", "1d", "1w", "1M"]
-STOCK_TFS = ["1h", "4h", "1d", "1w", "1M"]
+# Highlight bigger TFs
+HIGHLIGHT_TF = ["4h", "1d", "1w", "1M"]
 
-INDIAN_INDICES = {
-    "NIFTY50": "^NSEI",
-    "BANKNIFTY": "^NSEBANK",
-    "SENSEX": "^BSESN"
-}
-
-TOP20_STOCKS = [
-    "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
-    "KOTAKBANK.NS", "SBIN.NS", "LT.NS", "HINDUNILVR.NS", "BHARTIARTL.NS",
-    "ITC.NS", "AXISBANK.NS", "ASIANPAINT.NS", "MARUTI.NS", "BAJFINANCE.NS",
-    "HCLTECH.NS", "WIPRO.NS", "SUNPHARMA.NS", "TITAN.NS", "POWERGRID.NS"
-]
-
-BIG_TFS = ["4h", "1d", "1w", "1M"]
-
-# ================= UTILS =================
-binance = ccxt.binance()
-
-def send_telegram_message(bot_token, chat_ids, message):
-    for chat_id in chat_ids:
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+# ========== UTILS ==========
+def send_telegram(bot_token, text):
+    for cid in CHAT_IDS:
         try:
-            requests.post(url, data=payload, timeout=5)
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            requests.post(url, data={"chat_id": cid, "text": text})
         except Exception as e:
-            print(f"Error sending message: {e}")
+            print(f"Telegram error: {e}")
 
-def get_time():
-    tz = pytz.timezone("Asia/Kolkata")
-    return datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M IST")
-
-def market_open_now():
-    tz = pytz.timezone("Asia/Kolkata")
-    now = datetime.datetime.now(tz)
-    if now.weekday() >= 5:  # Saturday=5, Sunday=6
+def is_market_open():
+    """Check NSE/BSE market hours (Mon–Fri, 9:15–15:30 IST)."""
+    ist = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(ist)
+    if now.weekday() >= 5:  # Sat=5, Sun=6
         return False
-    market_start = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    market_end = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return market_start <= now <= market_end
+    start = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    end = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return start <= now <= end
 
-def format_message(symbol, tf, direction, low, high, price, prime=False):
-    now = get_time()
-    if prime:
-        header = "🌟 PRIME ALERT 🌟\n"
-    elif tf in BIG_TFS:
-        header = "🔥 BIG TF 🔥\n"
-    else:
-        header = "🚨 ALERT 🚨\n"
-    msg = (f"{header}"
-           f"{symbol} | {tf} | {direction}\n"
-           f"Range: {low}-{high} | Price: {price}\n"
-           f"🕒 {now}\n{SEPARATOR}")
-    return msg
+def detect_doji(candle):
+    o, h, l, c = candle
+    body = abs(c - o)
+    rng = h - l if h != l else 1
+    if rng == 0:
+        return False, False
+    body_pct = body / rng * 100
+    prime = body_pct < 0.5  # almost open=close
+    is_doji = body_pct < 10
+    return is_doji, prime
 
-# ================= ALERT CHECKERS =================
-def check_crypto_alerts():
-    alerts = []
-    for symbol in CRYPTO_SYMBOLS:
-        for tf in CRYPTO_TFS:
+# ========== CRYPTO PART ==========
+def check_crypto():
+    for symbol in ["BTC/USDT", "ETH/USDT"]:
+        for tf in CRYPTO_TF:
             try:
-                ohlcv = binance.fetch_ohlcv(symbol, tf, limit=2)
-                open_price, high, low, close = ohlcv[-1][1], ohlcv[-1][2], ohlcv[-1][3], ohlcv[-1][4]
-                price = close
-                direction = "UP" if price > (low + high) / 2 else "DOWN"
-                body_size = abs(close - open_price)
-                prime = body_size <= (0.001 * price)
-                alerts.append(format_message(symbol.replace("/", ""), tf, direction, low, high, price, prime))
+                ohlcv = exchange.fetch_ohlcv(symbol, tf, limit=2)
+                o, h, l, c = ohlcv[-1][1:5]
+                is_doji, prime = detect_doji((o, h, l, c))
+                if is_doji:
+                    hl = "⚡" if tf in HIGHLIGHT_TF else ""
+                    prime_tag = "🔥 Prime Doji" if prime else "Doji"
+                    msg = f"{hl} {prime_tag} in {symbol} {tf} | O:{o} C:{c} H:{h} L:{l}"
+                    send_telegram(CRYPTO_BOT_TOKEN, msg)
             except Exception as e:
-                print(f"Crypto error {symbol} {tf}: {e}")
-    if alerts:
-        send_telegram_message(CRYPTO_BOT_TOKEN, CHAT_IDS, "\n".join(alerts))
+                print(f"Crypto error {symbol}-{tf}: {e}")
 
-def get_stock_data_yf(symbol):
+# ========== INDIAN MARKET PART ==========
+def check_indices():
     try:
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="1d", interval="5m")
-        if hist.empty:
-            return None
-        latest = hist.iloc[-1]
-        open_price = latest["Open"]
-        high = latest["High"]
-        low = latest["Low"]
-        close = latest["Close"]
-        return open_price, high, low, close
-    except Exception:
-        return None
+        idx_data = nse_index()
+        for idx in INDICES:
+            data = next((i for i in idx_data if i.get("indexName") == idx), None)
+            if not data:
+                continue
+            o = data.get("dayHigh")  # NSE index data has no proper OHLC intraday, fallback
+            c = data.get("last")
+            h = data.get("yearHigh")
+            l = data.get("yearLow")
+            if not all([o, c, h, l]):
+                continue
+            is_doji, prime = detect_doji((o, h, l, c))
+            if is_doji:
+                prime_tag = "🔥 Prime Doji" if prime else "Doji"
+                msg = f"📊 {prime_tag} in {idx} | O:{o} C:{c} H:{h} L:{l}"
+                send_telegram(INDIA_BOT_TOKEN, msg)
+    except Exception as e:
+        print(f"Index error: {e}")
 
-def check_indian_alerts():
-    if not market_open_now():
-        print("Indian Market Closed, skipping...")
-        return
+def check_stocks():
+    for stock in STOCKS:
+        try:
+            data = nse_quote(stock)
+            o = data.get("dayHigh")
+            c = data.get("lastPrice")
+            h = data.get("dayHigh")
+            l = data.get("dayLow")
+            if not all([o, c, h, l]):
+                continue
+            is_doji, prime = detect_doji((o, h, l, c))
+            if is_doji:
+                prime_tag = "🔥 Prime Doji" if prime else "Doji"
+                msg = f"📈 {prime_tag} in {stock} | O:{o} C:{c} H:{h} L:{l}"
+                send_telegram(INDIA_BOT_TOKEN, msg)
+        except Exception as e:
+            print(f"Stock error {stock}: {e}")
 
-    alerts = []
-
-    # 🔹 Stocks
-    for stock in TOP20_STOCKS:
-        data = get_stock_data_yf(stock)
-        if not data:
-            continue
-        open_price, high, low, price = data
-        direction = "UP" if price > (low + high) / 2 else "DOWN"
-        body_size = abs(price - open_price)
-        prime = body_size <= (0.001 * price)
-        for tf in STOCK_TFS:
-            alerts.append(format_message(stock, tf, direction, low, high, price, prime))
-
-    # 🔹 Indices
-    for name, ticker in INDIAN_INDICES.items():
-        data = get_stock_data_yf(ticker)
-        if not data:
-            continue
-        open_price, high, low, price = data
-        direction = "UP" if price > (low + high) / 2 else "DOWN"
-        body_size = abs(price - open_price)
-        prime = body_size <= (0.001 * price)
-        for tf in INDEX_TFS:
-            alerts.append(format_message(name, tf, direction, low, high, price, prime))
-
-    if alerts:
-        send_telegram_message(INDIA_BOT_TOKEN, CHAT_IDS, "\n".join(alerts))
-
-# ================= RUN =================
+# ========== MAIN LOOP ==========
 if __name__ == "__main__":
-    check_crypto_alerts()
-    check_indian_alerts()
+    while True:
+        check_crypto()
+        if is_market_open():
+            check_indices()
+            check_stocks()
+        time.sleep(300)  # run every 5 min
