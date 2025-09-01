@@ -3,7 +3,7 @@ import datetime
 import pytz
 import ccxt
 import yfinance as yf
-from nsepython import nse_index, nse_eq
+from nsepython import nse_eq, nse_index
 
 # ================= CONFIG =================
 CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
@@ -22,8 +22,7 @@ STOCK_TFS = ["1h", "4h", "1d", "1w", "1M"]
 INDIAN_INDICES = {
     "NIFTY50": "^NSEI",
     "BANKNIFTY": "^NSEBANK",
-    "SENSEX": "^BSESN",
-    "BANKEX": "BSE-BANK"
+    "SENSEX": "^BSESN"
 }
 
 TOP20_STOCKS = [
@@ -50,6 +49,15 @@ def send_telegram_message(bot_token, chat_ids, message):
 def get_time():
     tz = pytz.timezone("Asia/Kolkata")
     return datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M IST")
+
+def market_open_now():
+    tz = pytz.timezone("Asia/Kolkata")
+    now = datetime.datetime.now(tz)
+    if now.weekday() >= 5:  # Saturday=5, Sunday=6
+        return False
+    market_start = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_end = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return market_start <= now <= market_end
 
 def format_message(symbol, tf, direction, low, high, price, prime=False):
     now = get_time()
@@ -84,49 +92,50 @@ def check_crypto_alerts():
         send_telegram_message(CRYPTO_BOT_TOKEN, CHAT_IDS, "\n".join(alerts))
 
 def get_stock_data_yf(symbol):
-    ticker = yf.Ticker(symbol)
-    hist = ticker.history(period="1d", interval="1m")
-    if hist.empty:
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="1d", interval="5m")
+        if hist.empty:
+            return None
+        latest = hist.iloc[-1]
+        open_price = latest["Open"]
+        high = latest["High"]
+        low = latest["Low"]
+        close = latest["Close"]
+        return open_price, high, low, close
+    except Exception:
         return None
-    latest = hist.iloc[-1]
-    open_price = latest["Open"]
-    high = latest["High"]
-    low = latest["Low"]
-    close = latest["Close"]
-    return open_price, high, low, close
 
 def check_indian_alerts():
+    if not market_open_now():
+        print("Indian Market Closed, skipping...")
+        return
+
     alerts = []
 
     # 🔹 Stocks
     for stock in TOP20_STOCKS:
-        try:
-            data = get_stock_data_yf(stock)
-            if not data:
-                continue
-            open_price, high, low, price = data
-            direction = "UP" if price > (low + high) / 2 else "DOWN"
-            body_size = abs(price - open_price)
-            prime = body_size <= (0.001 * price)
-            for tf in STOCK_TFS:
-                alerts.append(format_message(stock, tf, direction, low, high, price, prime))
-        except Exception as e:
-            print(f"Stock error {stock}: {e}")
+        data = get_stock_data_yf(stock)
+        if not data:
+            continue
+        open_price, high, low, price = data
+        direction = "UP" if price > (low + high) / 2 else "DOWN"
+        body_size = abs(price - open_price)
+        prime = body_size <= (0.001 * price)
+        for tf in STOCK_TFS:
+            alerts.append(format_message(stock, tf, direction, low, high, price, prime))
 
     # 🔹 Indices
     for name, ticker in INDIAN_INDICES.items():
-        try:
-            data = get_stock_data_yf(ticker)
-            if not data:
-                continue
-            open_price, high, low, price = data
-            direction = "UP" if price > (low + high) / 2 else "DOWN"
-            body_size = abs(price - open_price)
-            prime = body_size <= (0.001 * price)
-            for tf in INDEX_TFS:
-                alerts.append(format_message(name, tf, direction, low, high, price, prime))
-        except Exception as e:
-            print(f"Index error {name}: {e}")
+        data = get_stock_data_yf(ticker)
+        if not data:
+            continue
+        open_price, high, low, price = data
+        direction = "UP" if price > (low + high) / 2 else "DOWN"
+        body_size = abs(price - open_price)
+        prime = body_size <= (0.001 * price)
+        for tf in INDEX_TFS:
+            alerts.append(format_message(name, tf, direction, low, high, price, prime))
 
     if alerts:
         send_telegram_message(INDIA_BOT_TOKEN, CHAT_IDS, "\n".join(alerts))
