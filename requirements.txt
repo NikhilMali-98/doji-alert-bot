@@ -1,7 +1,8 @@
+
+ccxt
 pandas
 numpy
-python-binance
-nsepython
 requests
-dateparser
-ccxt
+pytz
+nsepython
+yfinance
