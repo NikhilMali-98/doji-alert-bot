@@ -4,3 +4,4 @@ python-binance
 nsepython
 requests
 dateparser
+ccxt
