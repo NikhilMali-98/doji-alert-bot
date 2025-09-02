@@ -6,3 +6,4 @@ requests
 pytz
 nsepython
 yfinance
+python-binance
