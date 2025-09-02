@@ -1,160 +1,161 @@
-import os
 import time
+import datetime
+import pytz
+import pandas as pd
 import ccxt
 import requests
-import pytz
-from datetime import datetime
-from nsepython import nse_index_list, nse_quote
+import traceback
+import yfinance as yf
+from nsepython import nse_get_index_list, nse_quote
 
-# ========== CONFIG ==========
-CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
-INDIA_BOT_TOKEN  = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
-CHAT_IDS = ["1343842801"]
+# Timezone
+IST = pytz.timezone("Asia/Kolkata")
 
-# Binance client
+# Crypto setup (Binance)
 exchange = ccxt.binance()
 
-# Timeframes
-CRYPTO_TF = ["15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
-INDICES = ["NIFTY 50", "NIFTY BANK", "SENSEX", "BSE BANKEX"]
-STOCKS = ["RELIANCE", "TCS", "INFY", "HDFCBANK"]
-
-# Highlight bigger TFs
-HIGHLIGHT_TF = ["4h", "1d", "1w", "1M"]
-
-# Cache for last alerts
+# Avoid duplicate alerts
 last_alerts = {}
-alert_cooldown = 300  # 10 minutes between alerts for same key
+
+# Timeframes
+TIMEFRAMES = ["15m", "30m", "1h", "2h", "4h", "1d"]
+
+# Indian market symbols
+NSE_STOCKS = ["RELIANCE", "TCS", "INFY", "HDFCBANK"]
+BSE_STOCKS = ["500325.BO", "500112.BO"]  # Example BSE codes
+
+# =====================
+# 🔹 Telegram Bots
+# =====================
+CRYPTO_BOT_TOKEN ="7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
+CRYPTO_CHAT_ID = "1343842801"
+
+INDIA_BOT_TOKEN = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
+INDIA_CHAT_ID = "1343842801"
 
 
-# ========== UTILS ==========
-def send_telegram(bot_token, text):
-    for cid in CHAT_IDS:
-        try:
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            requests.post(url, data={"chat_id": cid, "text": text})
-        except Exception as e:
-            print(f"Telegram error: {e}")
+
+def send_telegram_message(bot_token, chat_id, message):
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
 
-def is_market_open():
-    """Check NSE/BSE market hours (Mon–Fri, 9:15–15:30 IST)."""
-    ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist)
-    if now.weekday() >= 5:  # Sat=5, Sun=6
-        return False
-    start = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    end = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return start <= now <= end
+def get_crypto_data(symbol, timeframe="15m", limit=5):
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+    except Exception as e:
+        print(f"Error fetching crypto {symbol}: {e}")
+        return None
 
 
-def detect_doji(candle):
-    o, h, l, c = candle
-    body = abs(c - o)
-    rng = h - l if h != l else 1
-    if rng == 0:
-        return False, False
-    body_pct = body / rng * 100
-    prime = body_pct < 0.5  # almost open=close
-    is_doji = body_pct < 10
-    return is_doji, prime
+def get_nse_data(symbol):
+    try:
+        q = nse_quote(symbol)
+        return {
+            "symbol": symbol,
+            "price": float(q["priceInfo"]["lastPrice"]),
+            "high": float(q["priceInfo"]["intraDayHighLow"]["max"]),
+            "low": float(q["priceInfo"]["intraDayHighLow"]["min"]),
+        }
+    except Exception as e:
+        print(f"NSE fetch error {symbol}: {e}")
+        return None
 
 
-def format_msg(symbol, tf, o, h, l, c, prime, bot="crypto"):
-    ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist).strftime("%Y-%m-%d %H:%M IST")
-    hl = "🚨 " if tf in HIGHLIGHT_TF else ""
-    arrow = "🚀" if c > o else "🔻"
-    tag = "🔥 Prime Doji" if prime else "Doji"
+def get_bse_data(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period="1d", interval="5m")
+        if not data.empty:
+            latest = data.iloc[-1]
+            return {
+                "symbol": symbol,
+                "price": latest["Close"],
+                "high": data["High"].max(),
+                "low": data["Low"].min(),
+            }
+        return None
+    except Exception as e:
+        print(f"BSE fetch error {symbol}: {e}")
+        return None
 
-    msg = (
-        f"{hl}{symbol} | {tf} | {tag} {arrow}\n"
-        f"Range: {round(l,4)}-{round(h,4)} | Price: {round(c,4)}\n"
-        f"🕒 {now}\n"
-        f"━━━━✦✧✦━━━━"
-    )
+
+def is_doji(open_, close, high, low, threshold=0.1):
+    body = abs(close - open_)
+    range_ = high - low
+    return body <= threshold * range_
+
+
+def format_alert(symbol, tf, direction, low, high, price):
+    now = datetime.datetime.now(IST).strftime("%Y-%m-%d %H:%M IST")
+    msg = f"""🚨 {symbol} | {tf} | {direction} 🚀
+Range: {low:.4f}-{high:.4f} | Price: {price:.4f}
+🕒 {now}
+━━━━━━━✦✧✦━━━━━━━"""
     return msg
 
 
-def should_alert(key, new_val):
-    """Avoid repeated alerts for same symbol+tf with cooldown."""
-    global last_alerts
-    now = time.time()
-    if key not in last_alerts or (now - last_alerts[key]["time"] > alert_cooldown):
-        last_alerts[key] = {"val": new_val, "time": now}
-        return True
-    return False
+def check_and_alert(symbol, tf, open_, close, high, low, is_crypto=True):
+    direction = "UP" if close > open_ else "DOWN"
+    if is_doji(open_, close, high, low):
+        msg = format_alert(symbol, tf, direction, low, high, close)
+        key = f"{symbol}-{tf}-{direction}"
+        now = time.time()
+
+        # Prevent spam: 5 min cooldown per symbol+tf+direction
+        if key not in last_alerts or now - last_alerts[key] > 300:
+            last_alerts[key] = now
+
+            if is_crypto:
+                send_telegram_message(CRYPTO_BOT_TOKEN, CRYPTO_CHAT_ID, msg)
+            else:
+                send_telegram_message(INDIA_BOT_TOKEN, INDIA_CHAT_ID, msg)
 
 
-# ========== CRYPTO PART ==========
-def check_crypto():
-    for symbol in ["BTC/USDT", "ETH/USDT", "XRP/USDT"]:
-        for tf in CRYPTO_TF:
-            try:
-                ohlcv = exchange.fetch_ohlcv(symbol, tf, limit=2)
-                o, h, l, c = ohlcv[-1][1:5]
-                is_doji, prime = detect_doji((o, h, l, c))
-                if is_doji:
-                    msg_key = f"crypto-{symbol}-{tf}"
-                    msg_val = f"{o}-{c}-{h}-{l}"
-                    if should_alert(msg_key, msg_val):
-                        msg = format_msg(symbol, tf, o, h, l, c, prime, bot="crypto")
-                        send_telegram(CRYPTO_BOT_TOKEN, msg)
-            except Exception as e:
-                print(f"Crypto error {symbol}-{tf}: {e}")
-
-
-# ========== INDIAN MARKET PART ==========
-def check_indices():
-    try:
-        idx_data = nse_index_list()
-        for idx in INDICES:
-            data = next((i for i in idx_data if i.get("indexName") == idx), None)
-            if not data:
-                continue
-            o = data.get("dayHigh") or 0
-            c = data.get("last") or 0
-            h = data.get("yearHigh") or 0
-            l = data.get("yearLow") or 0
-            if not all([o, c, h, l]):
-                continue
-            is_doji, prime = detect_doji((o, h, l, c))
-            if is_doji:
-                msg_key = f"index-{idx}"
-                msg_val = f"{o}-{c}-{h}-{l}"
-                if should_alert(msg_key, msg_val):
-                    msg = format_msg(idx, "LIVE", o, h, l, c, prime, bot="india")
-                    send_telegram(INDIA_BOT_TOKEN, msg)
-    except Exception as e:
-        print(f"Index error: {e}")
-
-
-def check_stocks():
-    for stock in STOCKS:
-        try:
-            data = nse_quote(stock)
-            o = data.get("dayHigh") or 0
-            c = data.get("lastPrice") or 0
-            h = data.get("dayHigh") or 0
-            l = data.get("dayLow") or 0
-            if not all([o, c, h, l]):
-                continue
-            is_doji, prime = detect_doji((o, h, l, c))
-            if is_doji:
-                msg_key = f"stock-{stock}"
-                msg_val = f"{o}-{c}-{h}-{l}"
-                if should_alert(msg_key, msg_val):
-                    msg = format_msg(stock, "LIVE", o, h, l, c, prime, bot="india")
-                    send_telegram(INDIA_BOT_TOKEN, msg)
-        except Exception as e:
-            print(f"Stock error {stock}: {e}")
-
-
-# ========== MAIN LOOP ==========
-if __name__ == "__main__":
+def run():
     while True:
-        check_crypto()
-        if is_market_open():
-            check_indices()
-            check_stocks()
+        try:
+            # 🔹 Crypto Alerts
+            for sym in ["XRP/USDT", "BTC/USDT", "ETH/USDT"]:
+                for tf in TIMEFRAMES:
+                    df = get_crypto_data(sym, tf)
+                    if df is not None and len(df) >= 2:
+                        row = df.iloc[-1]
+                        check_and_alert(
+                            sym.replace("/", ""),
+                            tf,
+                            row["open"],
+                            row["close"],
+                            row["high"],
+                            row["low"],
+                            is_crypto=True,
+                        )
+
+            # 🔹 NSE Alerts
+            for sym in NSE_STOCKS:
+                data = get_nse_data(sym)
+                if data:
+                    check_and_alert(sym, "Spot", data["price"], data["price"], data["high"], data["low"], is_crypto=False)
+
+            # 🔹 BSE Alerts
+            for sym in BSE_STOCKS:
+                data = get_bse_data(sym)
+                if data:
+                    check_and_alert(sym, "Spot", data["price"], data["price"], data["high"], data["low"], is_crypto=False)
+
+        except Exception as e:
+            print("Error in main loop:", e)
+            traceback.print_exc()
+
         time.sleep(300)  # run every 5 min
+
+
+if __name__ == "__main__":
+    run()
