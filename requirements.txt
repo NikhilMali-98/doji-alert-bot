@@ -1,9 +1,7 @@
-
-ccxt
 pandas
 numpy
-requests
-pytz
-nsepython
 yfinance
 python-binance
+requests
+pytz
+matplotlib
