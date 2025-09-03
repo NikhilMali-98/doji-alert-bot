@@ -22,20 +22,11 @@ TF_COOLDOWN_SEC = {
     "1d": 86400, "1w": 604800, "1M": 2592000
 }
 
-# interval map for minutes
-MINUTES_MAP = {"m": 1, "h": 60, "d": 1440, "w": 10080, "M": 43200}
-def interval_to_minutes(interval: str) -> int:
-    try:
-        unit = interval[-1]
-        val = int(interval[:-1])
-        return val * MINUTES_MAP.get(unit, 1)
-    except:
-        return 5
-
 # ================== SYMBOL SETS ==================
 CRYPTO_SYMBOLS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
-    "DOGEUSDT"]
+    "DOGEUSDT"
+]
 CRYPTO_TFS = ["15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
 
 INDICES_MAP = {
@@ -100,24 +91,37 @@ def send_telegram(bot_token: str, messages: list[str]):
 
 # ================== DOJI + BREAKOUT ==================
 def is_doji(open_, high, low, close):
-    body = abs(close - open_)
+    """
+    Doji logic:
+      - Special: high==low → Always Doji + Prime
+      - Prime: body <= 5% of range OR body <= 0.05% of close
+      - Normal: body <= 20% of range
+    """
+    body = abs(open_ - close)
     rng = high - low
 
-    # Special case → perfect doji
-    if rng == 0:
+    if rng == 0:  # special case
         return True, True
 
-    # Normal doji → body ≤ 20% of range
-    doji = body <= 0.2 * rng
+    # Prime check
+    if body <= 0.05 * rng or body <= 0.0005 * close:
+        return True, True
 
-    # Prime doji stricter → body ≤ 5% of range OR body ≤ 0.05% of close
-    prime = (body <= 0.05 * rng) or (body <= 0.0005 * close)
+    # Normal check
+    if body <= 0.20 * rng:
+        return True, False
 
-    return doji, prime
+    return False, False
 
 def detect_two_doji_breakout(df_ohlc: pd.DataFrame):
+    """
+    Rule:
+      - At least 2 consecutive dojis (normal or prime, incl. high==low)
+      - Next candle must breakout open/close zone of the two dojis
+    """
     if df_ohlc is None or len(df_ohlc) < 3:
         return (False, None, None, None, None, False, None)
+
     c1, c2, c3 = df_ohlc.iloc[-3], df_ohlc.iloc[-2], df_ohlc.iloc[-1]
 
     d1, p1 = is_doji(c1["open"], c1["high"], c1["low"], c1["close"])
@@ -125,6 +129,7 @@ def detect_two_doji_breakout(df_ohlc: pd.DataFrame):
     if not (d1 and d2):
         return (False, None, None, None, None, False, None)
 
+    # Use open/close body zone for breakout
     body_high = max(c1["open"], c1["close"], c2["open"], c2["close"])
     body_low  = min(c1["open"], c1["close"], c2["open"], c2["close"])
 
