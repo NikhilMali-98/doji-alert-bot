@@ -11,7 +11,7 @@ import io
 # ================== TELEGRAM CONFIG ==================
 CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
 INDIA_BOT_TOKEN  = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
-CHAT_IDS = ["1343842801"]
+CHAT_IDS = ["1343842801", "1269772473"]
 
 # ================== CONSTANTS ==================
 SEPARATOR = "━━━━━━━✦✧✦━━━━━━━"
@@ -29,21 +29,21 @@ CRYPTO_SYMBOLS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
     "DOGEUSDT"
 ]
-CRYPTO_TFS = ["15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
+CRYPTO_TFS = ["15m", "1h", "4h", "1d", "1w", "1M"]
 
+# ✅ NSE-first for indices
 INDICES_MAP = {
     "NIFTY 50": ["^NSEI"],
-    "NIFTY BANK": ["^NSEBANK"],
-    "SENSEX": ["^BSESN"]
+    "NIFTY BANK": ["^NSEBANK"]
 }
 
 TOP15_STOCKS_NS = [
     "RELIANCE.NS","TCS.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS",
     "LT.NS","ITC.NS","SBIN.NS","BHARTIARTL.NS","AXISBANK.NS",
-    "KOTAKBANK.NS","HINDUNILVR.NS","ASIANPAINT.NS","MARUTI.NS","BAJFINANCE.NS"
+    "KOTAKBANK.NS","HINDUNILVR.NS","ASIANPAINTS.NS","MARUTI.NS","BAJFINANCE.NS"
 ]
 
-INDEX_TFS = ["15m", "30m", "1h", "2h", "4h", "1d", "1w", "1M"]
+INDEX_TFS = ["15m", "1h", "4h", "1d", "1w", "1M"]
 STOCK_TFS = ["1h", "2h", "4h", "1d", "1w", "1M"]
 
 # ================== CLIENTS & STATE ==================
@@ -81,7 +81,6 @@ def cooldown_ok(market: str, symbol: str, tf: str, direction: str) -> bool:
     return False
 
 def send_telegram(bot_token: str, messages: list[str], image_buf=None):
-    """Send text + optional image to telegram"""
     if not messages:
         return
     payload = f"\n{SEPARATOR}\n".join(messages)
@@ -102,16 +101,12 @@ def send_telegram(bot_token: str, messages: list[str], image_buf=None):
 def is_doji(open_, high, low, close):
     body = abs(open_ - close)
     rng = high - low
-
     if rng == 0:
         return True, True  # special case -> prime
-
     if body <= 0.05 * rng or body <= 0.0005 * close:
         return True, True  # Prime
-
     if body <= 0.20 * rng:
         return True, False  # Normal
-
     return False, False
 
 def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
@@ -156,9 +151,9 @@ def make_msg(symbol, tf, direction, low, high, last_close, prime, market):
     low_s, high_s, px_s = f"{low:.4f}", f"{high:.4f}", f"{last_close:.4f}"
     header = ""
     if tf in BIG_TFS:
-        header += "🔶 BIG TF\n"
+        header += "🔶 BIG TF 🔶\n"
     if prime:
-        header += "🔥 PRIME ALERT 🔥\n"
+        header += "🔥 PRIME 🔥\n"
     return (
         f"{header}🚨 {sym} | {tf} | {direction}\n"
         f"Range: {low_s}-{high_s} | Price: {px_s}\n"
@@ -177,7 +172,6 @@ def plot_doji_chart(df, symbol, tf, direction, low, high, last_close):
                                    0.6, abs(row["open"]-row["close"]),
                                    color=color, alpha=0.6))
 
-    # breakout zone
     ax.axhline(low, color="blue", linestyle="--", label="Doji Zone Low")
     ax.axhline(high, color="orange", linestyle="--", label="Doji Zone High")
     ax.axhline(last_close, color="black", linestyle=":", label="Last Close")
@@ -230,10 +224,18 @@ def fetch_yf_ohlc(symbol, tf):
         return pd.DataFrame()
 
 def first_working_ticker(symbol_aliases, tf):
+    # Try NSE / index aliases first
     for s in symbol_aliases:
         df = fetch_yf_ohlc(s, tf)
         if not df.empty:
             return s, df
+    # Fallback for stocks: try BSE (.BO) if NSE fails
+    first = symbol_aliases[0]
+    if ".NS" in first:
+        alt = first.replace(".NS", ".BO")
+        df = fetch_yf_ohlc(alt, tf)
+        if not df.empty:
+            return alt, df
     return "", pd.DataFrame()
 
 # ================== SCANNERS ==================
@@ -276,8 +278,8 @@ def scan_india():
     for sym in TOP15_STOCKS_NS:
         disp = sym.replace(".NS", "")
         for tf in STOCK_TFS:
-            df = fetch_yf_ohlc(sym, tf)
-            if df.empty or len(df) < 3: continue
+            alias, df = first_working_ticker([sym], tf)
+            if not alias or df.empty or len(df) < 3: continue
             trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
             if not trig: continue
             bar_ts = str(df.iloc[-1]["time"])
