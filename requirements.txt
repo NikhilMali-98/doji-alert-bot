@@ -1,7 +1,19 @@
-pandas
-numpy
-yfinance
-python-binance
-requests
-pytz
-matplotlib
+# Core Python libs
+pandas==2.2.2
+numpy==1.26.4
+requests==2.32.3
+
+# Crypto data
+python-binance==1.0.19
+
+# Indian stock data (Yahoo Finance proxy)
+yfinance==0.2.43
+
+# Telegram bot
+python-telegram-bot==21.4
+
+# Timezone handling
+pytz==2024.1
+
+# Retry logic (optional, for robust data fetches)
+tenacity==9.0.0
