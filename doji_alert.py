@@ -263,8 +263,8 @@ def first_working_ticker(symbol_aliases, tf):
             return alt, df
     return "", pd.DataFrame()
 
-# ================== SCANNERS ==================
-def scan_crypto():
+# ================== SCANNERS ================== 
+/* def scan_crypto():
     for sym in CRYPTO_SYMBOLS:
         for tf in CRYPTO_TFS:
             df = fetch_crypto_ohlc(sym, tf, limit=8)
@@ -286,7 +286,31 @@ def scan_crypto():
                     last_bar_key.add(bar_key)
                     msg = make_msg(sym, tf, direction, low, high, last_close, False, "CRYPTO", special_alert=True)
                     chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
+                    send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)  */
+
+def scan_crypto():
+    for sym in CRYPTO_SYMBOLS:
+        for tf in CRYPTO_TFS:
+            df = fetch_crypto_ohlc(sym, tf, limit=8)
+            print(f"Crypto fetch {sym=} {tf=}, rows={len(df)}")
+            if df.empty or len(df) < 3:
+                continue
+            trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
+            print(f"Doji check {sym=} {tf=}, trig={trig}, prime={prime}")
+            if trig:
+                bar_key = ("CRYPTO", sym, tf, bar_ts, direction)
+                print(f"Checking cooldown {bar_key=}")
+                if bar_key not in last_bar_key and cooldown_ok("CRYPTO", sym, tf, direction):
+                    print(f"Sending alert for {sym=}, {tf=}")
+                    last_bar_key.add(bar_key)
+                    msg = make_msg(sym, tf, direction, low, high, last_close, prime, "CRYPTO")
+                    try:
+                        chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
+                    except Exception as e:
+                        print(f"Chart error {sym}: {e}")
+                        chart_buf = None
                     send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)
+
 
 def scan_india():
     if not is_india_market_hours():
