@@ -141,8 +141,8 @@ def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
         return (False, None, None, None, None, False, None)
 
     # volume filter
-    if breakout_candle["volume"] < doji_candles["volume"].mean():
-        return (False, None, None, None, None, False, None)
+"""    if breakout_candle["volume"] < doji_candles["volume"].mean():
+        return (False, None, None, None, None, False, None)  """
 
     bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
     return (True, direction, body_low, body_high, breakout_candle["close"], prime_found, bar_ts)
