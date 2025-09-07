@@ -11,7 +11,7 @@ import io
 # ================== TELEGRAM CONFIG ==================
 CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
 INDIA_BOT_TOKEN  = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
-CHAT_IDS = ["1343842801", "1269772473"]   # Add multiple IDs like ["id1","id2"]
+CHAT_IDS = ["1343842801" , "1269772473"]   # Add multiple IDs like ["id1","id2"]
 
 # ================== CONSTANTS ==================
 SEPARATOR = "━━━━━━━✦✧✦━━━━━━━"
@@ -141,8 +141,8 @@ def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
         return (False, None, None, None, None, False, None)
 
     # volume filter
-"""    if breakout_candle["volume"] < doji_candles["volume"].mean():
-        return (False, None, None, None, None, False, None)  """
+    if breakout_candle["volume"] < doji_candles["volume"].mean():
+        return (False, None, None, None, None, False, None)
 
     bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
     return (True, direction, body_low, body_high, breakout_candle["close"], prime_found, bar_ts)
@@ -263,8 +263,8 @@ def first_working_ticker(symbol_aliases, tf):
             return alt, df
     return "", pd.DataFrame()
 
-# ================== SCANNERS ================== 
-""" def scan_crypto():
+# ================== SCANNERS ==================
+def scan_crypto():
     for sym in CRYPTO_SYMBOLS:
         for tf in CRYPTO_TFS:
             df = fetch_crypto_ohlc(sym, tf, limit=8)
@@ -286,31 +286,7 @@ def first_working_ticker(symbol_aliases, tf):
                     last_bar_key.add(bar_key)
                     msg = make_msg(sym, tf, direction, low, high, last_close, False, "CRYPTO", special_alert=True)
                     chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
-                    send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)  """
-
-def scan_crypto():
-    for sym in CRYPTO_SYMBOLS:
-        for tf in CRYPTO_TFS:
-            df = fetch_crypto_ohlc(sym, tf, limit=8)
-            print(f"Crypto fetch {sym=} {tf=}, rows={len(df)}")
-            if df.empty or len(df) < 3:
-                continue
-            trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
-            print(f"Doji check {sym=} {tf=}, trig={trig}, prime={prime}")
-            if trig:
-                bar_key = ("CRYPTO", sym, tf, bar_ts, direction)
-                print(f"Checking cooldown {bar_key=}")
-                if bar_key not in last_bar_key and cooldown_ok("CRYPTO", sym, tf, direction):
-                    print(f"Sending alert for {sym=}, {tf=}")
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(sym, tf, direction, low, high, last_close, prime, "CRYPTO")
-                    try:
-                        chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
-                    except Exception as e:
-                        print(f"Chart error {sym}: {e}")
-                        chart_buf = None
                     send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)
-
 
 def scan_india():
     if not is_india_market_hours():
