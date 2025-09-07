@@ -264,7 +264,7 @@ def first_working_ticker(symbol_aliases, tf):
     return "", pd.DataFrame()
 
 # ================== SCANNERS ================== 
-/* def scan_crypto():
+""" def scan_crypto():
     for sym in CRYPTO_SYMBOLS:
         for tf in CRYPTO_TFS:
             df = fetch_crypto_ohlc(sym, tf, limit=8)
@@ -286,7 +286,7 @@ def first_working_ticker(symbol_aliases, tf):
                     last_bar_key.add(bar_key)
                     msg = make_msg(sym, tf, direction, low, high, last_close, False, "CRYPTO", special_alert=True)
                     chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
-                    send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)  */
+                    send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)  """
 
 def scan_crypto():
     for sym in CRYPTO_SYMBOLS:
