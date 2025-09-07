@@ -11,7 +11,7 @@ import io
 # ================== TELEGRAM CONFIG ==================
 CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
 INDIA_BOT_TOKEN  = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
-CHAT_IDS = ["1343842801", "1269772473"]
+CHAT_IDS = ["1343842801", "1269772473"]   # Add multiple IDs like ["id1","id2"]
 
 # ================== CONSTANTS ==================
 SEPARATOR = "━━━━━━━✦✧✦━━━━━━━"
@@ -25,13 +25,9 @@ TF_COOLDOWN_SEC = {
 }
 
 # ================== SYMBOL SETS ==================
-CRYPTO_SYMBOLS = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
-    "DOGEUSDT"
-]
-CRYPTO_TFS = ["15m", "1h", "4h", "1d", "1w", "1M"]
+CRYPTO_SYMBOLS = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT"]
+CRYPTO_TFS = ["15m", "1h", "2h", "4h", "1d", "1w", "1M"]
 
-# ✅ NSE-first for indices
 INDICES_MAP = {
     "NIFTY 50": ["^NSEI"],
     "NIFTY BANK": ["^NSEBANK"]
@@ -43,7 +39,7 @@ TOP15_STOCKS_NS = [
     "KOTAKBANK.NS","HINDUNILVR.NS","ASIANPAINTS.NS","MARUTI.NS","BAJFINANCE.NS"
 ]
 
-INDEX_TFS = ["15m", "1h", "4h", "1d", "1w", "1M"]
+INDEX_TFS = ["15m", "1h", "2h", "4h", "1d", "1w", "1M"]
 STOCK_TFS = ["1h", "2h", "4h", "1d", "1w", "1M"]
 
 # ================== CLIENTS & STATE ==================
@@ -98,15 +94,16 @@ def send_telegram(bot_token: str, messages: list[str], image_buf=None):
             print("Telegram Error:", e)
 
 # ================== DOJI + BREAKOUT ==================
-def is_doji(open_, high, low, close):
+def is_doji(open_, high, low, close, volume=None):
     body = abs(open_ - close)
     rng = high - low
     if rng == 0:
-        return True, True  # special case -> prime
-    if body <= 0.05 * rng or body <= 0.0005 * close:
-        return True, True  # Prime
+        return True, True
+    if body <= 0.02 * rng or body <= 0.0002 * close:   # stricter 2% rule
+        if volume and volume > 0:
+            return True, True
     if body <= 0.20 * rng:
-        return True, False  # Normal
+        return True, False
     return False, False
 
 def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
@@ -119,7 +116,8 @@ def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
     doji_indices = []
     prime_found = False
     for i in range(len(candles)-1, -1, -1):
-        d, p = is_doji(candles.iloc[i]["open"], candles.iloc[i]["high"], candles.iloc[i]["low"], candles.iloc[i]["close"])
+        row = candles.iloc[i]
+        d, p = is_doji(row["open"], row["high"], row["low"], row["close"], row.get("volume"))
         if d:
             doji_indices.append(i)
             if p:
@@ -136,31 +134,59 @@ def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
 
     direction = None
     if breakout_candle["close"] > body_high:
-        direction = "UP 🚀"
+        direction = "UP ✅"
     elif breakout_candle["close"] < body_low:
-        direction = "DOWN 🔻"
+        direction = "DOWN ✅"
     if not direction:
+        return (False, None, None, None, None, False, None)
+
+    # volume filter
+    if breakout_candle["volume"] < doji_candles["volume"].mean():
         return (False, None, None, None, None, False, None)
 
     bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
     return (True, direction, body_low, body_high, breakout_candle["close"], prime_found, bar_ts)
 
-def make_msg(symbol, tf, direction, low, high, last_close, prime, market):
+def detect_consolidation_breakout(df_ohlc: pd.DataFrame):
+    if df_ohlc is None or len(df_ohlc) < 4:
+        return (False, None, None, None, None, None)
+
+    candles = df_ohlc.iloc[:-1]
+    breakout_candle = df_ohlc.iloc[-1]
+
+    last_3 = candles.iloc[-3:]
+    body_ranges = abs(last_3["open"] - last_3["close"])
+    total_range = last_3["high"].max() - last_3["low"].min()
+
+    if total_range == 0:
+        return False, None, None, None, None, None
+
+    if all(body_ranges <= 0.05 * total_range) and breakout_candle["close"] > last_3["high"].max():
+        body_low = last_3["low"].min()
+        body_high = last_3["high"].max()
+        last_close = breakout_candle["close"]
+        bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
+        return True, "UP ✅", body_low, body_high, last_close, bar_ts
+
+    return False, None, None, None, None, None
+
+def make_msg(symbol, tf, direction, low, high, last_close, prime, market, special_alert=False):
     ts = ist_now_str()
     sym = symbol.replace("USDT", "USD") if market == "CRYPTO" else symbol
     low_s, high_s, px_s = f"{low:.4f}", f"{high:.4f}", f"{last_close:.4f}"
     header = ""
     if tf in BIG_TFS:
         header += "🔶 BIG TF 🔶\n"
-    if prime:
-        header += "🔥 PRIME 🔥\n"
+    if special_alert:
+        header += "🔥 CONSOLIDATION 🔥\n"
+    elif prime:
+        header += "🚨 PRIME 🚨\n"
     return (
         f"{header}🚨 {sym} | {tf} | {direction}\n"
         f"Range: {low_s}-{high_s} | Price: {px_s}\n"
         f"🕒 {ts} IST"
     )
 
-# ================== PLOTTER ==================
 def plot_doji_chart(df, symbol, tf, direction, low, high, last_close):
     df = df.tail(10).copy()
     fig, ax = plt.subplots(figsize=(6,4))
@@ -172,8 +198,8 @@ def plot_doji_chart(df, symbol, tf, direction, low, high, last_close):
                                    0.6, abs(row["open"]-row["close"]),
                                    color=color, alpha=0.6))
 
-    ax.axhline(low, color="blue", linestyle="--", label="Doji Zone Low")
-    ax.axhline(high, color="orange", linestyle="--", label="Doji Zone High")
+    ax.axhline(low, color="blue", linestyle="--", label="Zone Low")
+    ax.axhline(high, color="orange", linestyle="--", label="Zone High")
     ax.axhline(last_close, color="black", linestyle=":", label="Last Close")
 
     ax.set_title(f"{symbol} {tf} | {direction}")
@@ -193,6 +219,7 @@ def fetch_crypto_ohlc(symbol, interval, limit=6):
         rows = [{
             "open": float(c[1]), "high": float(c[2]),
             "low": float(c[3]), "close": float(c[4]),
+            "volume": float(c[5]),
             "close_time": int(c[6])
         } for c in kl]
         return pd.DataFrame(rows)
@@ -210,13 +237,13 @@ def fetch_yf_ohlc(symbol, tf):
             hist = t.history(period="1mo", interval="1d")
         if hist.empty:
             return pd.DataFrame()
-        df = hist[["Open","High","Low","Close"]].rename(
-            columns={"Open":"open","High":"high","Low":"low","Close":"close"}
+        df = hist[["Open","High","Low","Close","Volume"]].rename(
+            columns={"Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"}
         )
         df.index = pd.to_datetime(df.index).tz_localize(None)
         rule = tf_to_pandas(tf)
         ohlc = df.resample(rule, label="right", closed="right").agg(
-            {"open":"first","high":"max","low":"min","close":"last"}
+            {"open":"first","high":"max","low":"min","close":"last","volume":"sum"}
         ).dropna()
         return ohlc.tail(100).reset_index().rename(columns={"Datetime":"time","Date":"time"})
     except Exception as e:
@@ -224,12 +251,10 @@ def fetch_yf_ohlc(symbol, tf):
         return pd.DataFrame()
 
 def first_working_ticker(symbol_aliases, tf):
-    # Try NSE / index aliases first
     for s in symbol_aliases:
         df = fetch_yf_ohlc(s, tf)
         if not df.empty:
             return s, df
-    # Fallback for stocks: try BSE (.BO) if NSE fails
     first = symbol_aliases[0]
     if ".NS" in first:
         alt = first.replace(".NS", ".BO")
@@ -240,80 +265,87 @@ def first_working_ticker(symbol_aliases, tf):
 
 # ================== SCANNERS ==================
 def scan_crypto():
-    msgs = []
     for sym in CRYPTO_SYMBOLS:
         for tf in CRYPTO_TFS:
             df = fetch_crypto_ohlc(sym, tf, limit=8)
             if df.empty or len(df) < 3:
                 continue
             trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
-            if not trig: continue
-            bar_key = ("CRYPTO", sym, tf, bar_ts, direction)
-            if bar_key in last_bar_key: continue
-            if not cooldown_ok("CRYPTO", sym, tf, direction): continue
-            last_bar_key.add(bar_key)
-            msg = make_msg(sym, tf, direction, low, high, last_close, prime, "CRYPTO")
-            chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
-            send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)
-            msgs.append(msg)
-    return msgs
+            if trig:
+                bar_key = ("CRYPTO", sym, tf, bar_ts, direction)
+                if bar_key not in last_bar_key and cooldown_ok("CRYPTO", sym, tf, direction):
+                    last_bar_key.add(bar_key)
+                    msg = make_msg(sym, tf, direction, low, high, last_close, prime, "CRYPTO")
+                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
+                    send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)
+
+            cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
+            if cons:
+                bar_key = ("CRYPTO_CONS", sym, tf, bar_ts, direction)
+                if bar_key not in last_bar_key and cooldown_ok("CRYPTO", sym, tf, direction):
+                    last_bar_key.add(bar_key)
+                    msg = make_msg(sym, tf, direction, low, high, last_close, False, "CRYPTO", special_alert=True)
+                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
+                    send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)
 
 def scan_india():
-    msgs = []
-    for name, aliases in INDICES_MAP.items():
+    if not is_india_market_hours():
+        return
+    for idx_name, aliases in INDICES_MAP.items():
         for tf in INDEX_TFS:
             alias, df = first_working_ticker(aliases, tf)
-            if not alias or df.empty or len(df) < 3: continue
+            if not alias or df.empty:
+                continue
             trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
-            if not trig: continue
-            bar_ts = str(df.iloc[-1]["time"])
-            bar_key = ("INDIA", name, tf, bar_ts, direction)
-            if bar_key in last_bar_key: continue
-            if not cooldown_ok("INDIA", name, tf, direction): continue
-            last_bar_key.add(bar_key)
-            msg = make_msg(name, tf, direction, low, high, last_close, prime, "INDIA")
-            chart_buf = plot_doji_chart(df, name, tf, direction, low, high, last_close)
-            send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
-            msgs.append(msg)
+            if trig:
+                bar_key = ("INDEX", idx_name, tf, bar_ts, direction)
+                if bar_key not in last_bar_key and cooldown_ok("INDEX", idx_name, tf, direction):
+                    last_bar_key.add(bar_key)
+                    msg = make_msg(idx_name, tf, direction, low, high, last_close, prime, "INDIA")
+                    chart_buf = plot_doji_chart(df, idx_name, tf, direction, low, high, last_close)
+                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
+
+            cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
+            if cons:
+                bar_key = ("INDEX_CONS", idx_name, tf, bar_ts, direction)
+                if bar_key not in last_bar_key and cooldown_ok("INDEX", idx_name, tf, direction):
+                    last_bar_key.add(bar_key)
+                    msg = make_msg(idx_name, tf, direction, low, high, last_close, False, "INDIA", special_alert=True)
+                    chart_buf = plot_doji_chart(df, idx_name, tf, direction, low, high, last_close)
+                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
+
     for sym in TOP15_STOCKS_NS:
-        disp = sym.replace(".NS", "")
         for tf in STOCK_TFS:
-            alias, df = first_working_ticker([sym], tf)
-            if not alias or df.empty or len(df) < 3: continue
+            df = fetch_yf_ohlc(sym, tf)
+            if df.empty:
+                continue
             trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
-            if not trig: continue
-            bar_ts = str(df.iloc[-1]["time"])
-            bar_key = ("INDIA", disp, tf, bar_ts, direction)
-            if bar_key in last_bar_key: continue
-            if not cooldown_ok("INDIA", disp, tf, direction): continue
-            last_bar_key.add(bar_key)
-            msg = make_msg(disp, tf, direction, low, high, last_close, prime, "INDIA")
-            chart_buf = plot_doji_chart(df, disp, tf, direction, low, high, last_close)
-            send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
-            msgs.append(msg)
-    return msgs
+            if trig:
+                bar_key = ("STOCK", sym, tf, bar_ts, direction)
+                if bar_key not in last_bar_key and cooldown_ok("STOCK", sym, tf, direction):
+                    last_bar_key.add(bar_key)
+                    msg = make_msg(sym, tf, direction, low, high, last_close, prime, "INDIA")
+                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
+                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
+
+            cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
+            if cons:
+                bar_key = ("STOCK_CONS", sym, tf, bar_ts, direction)
+                if bar_key not in last_bar_key and cooldown_ok("STOCK", sym, tf, direction):
+                    last_bar_key.add(bar_key)
+                    msg = make_msg(sym, tf, direction, low, high, last_close, False, "INDIA", special_alert=True)
+                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
+                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
 
 # ================== MAIN LOOP ==================
-def main():
-    print("🚀 Combined Doji Breakout Bot (Crypto + India) started...")
-    send_telegram(CRYPTO_BOT_TOKEN, ["✅ Crypto scanner online"])
-    send_telegram(INDIA_BOT_TOKEN,  ["✅ India scanner online (yfinance best-effort)"])
+def main_loop():
     while True:
         try:
-            c_msgs = scan_crypto()
+            scan_crypto()
+            scan_india()
         except Exception as e:
-            print("Crypto scan error:", e)
-            c_msgs = []
-        i_msgs = []
-        try:
-            if is_india_market_hours():
-                i_msgs = scan_india()
-            else:
-                print("India market closed, skipping scan.")
-        except Exception as e:
-            print("India scan error:", e)
-        print(f"Cycle done | Crypto: {len(c_msgs)} | India: {len(i_msgs)} | {ist_now_str()} IST")
-        time.sleep(300)
+            print("Main loop error:", e)
+        time.sleep(300)  # run every 5 mins
 
 if __name__ == "__main__":
-    main()
+    main_loop()
