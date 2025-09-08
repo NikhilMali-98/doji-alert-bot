@@ -225,16 +225,16 @@ def scan_crypto():
     for sym in CRYPTO_SYMBOLS:
         for tf in CRYPTO_TFS:
             df = fetch_crypto_ohlc(sym, tf, limit=8)
-            print(f"Crypto fetch {sym=} {tf=}, rows={len(df)}")
+      #      print(f"Crypto fetch {sym=} {tf=}, rows={len(df)}")
             if df.empty or len(df) < 3:
                 continue
             trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
-            print(f"Doji check {sym=} {tf=}, trig={trig}, prime={prime}")
+          #  print(f"Doji check {sym=} {tf=}, trig={trig}, prime={prime}")
             if trig:
                 bar_key = ("CRYPTO", sym, tf, bar_ts, direction)
-                print(f"Checking cooldown {bar_key=}")
+           #     print(f"Checking cooldown {bar_key=}")
                 if bar_key not in last_bar_key and cooldown_ok("CRYPTO", sym, tf, direction):
-                    print(f"Sending alert for {sym=}, {tf=}")
+     #               print(f"Sending alert for {sym=}, {tf=}")
                     last_bar_key.add(bar_key)
                     msg = make_msg(sym, tf, direction, low, high, last_close, prime, "CRYPTO")
                     try:
@@ -252,7 +252,7 @@ def scan_crypto():
                     chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
                     send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)
 
-def scan_india():
+""" def scan_india():
     if not is_india_market_hours():
         return
     for idx_name, aliases in INDICES_MAP.items():
@@ -297,6 +297,80 @@ def scan_india():
                     msg = make_msg(sym, tf, direction, low, high, last_close, False, "INDIA", special_alert=True)
                     chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
                     send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
+"""
+def scan_india():
+    print("Checking if India market is open...")
+    if not is_india_market_hours():
+        print("India market is closed.")
+        return
+
+    print("Scanning Indices...")
+    for idx_name, aliases in INDICES_MAP.items():
+        for tf in INDEX_TFS:
+            print(f"Fetching data for {idx_name} ({aliases}) with timeframe {tf}...")
+            alias, df = first_working_ticker(aliases, tf)
+            if not alias or df.empty:
+                print(f"No data found for {idx_name} with {tf}")
+                continue
+            trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
+            print(f"Doji check {idx_name=} {tf=}, trig={trig}, prime={prime}")
+            if trig:
+                bar_key = ("INDEX", idx_name, tf, bar_ts, direction)
+                print(f"Found breakout for {idx_name} in {tf}, checking cooldown...")
+                if bar_key not in last_bar_key and cooldown_ok("INDEX", idx_name, tf, direction):
+                    last_bar_key.add(bar_key)
+                    print(f"Sending alert for {idx_name} in {tf}")
+                    msg = make_msg(idx_name, tf, direction, low, high, last_close, prime, "INDIA")
+                    chart_buf = plot_doji_chart(df, idx_name, tf, direction, low, high, last_close)
+                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
+            else:
+                print(f"No breakout found for {idx_name} in {tf}")
+
+            cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
+            if cons:
+                bar_key = ("INDEX_CONS", idx_name, tf, bar_ts, direction)
+                print(f"Found consolidation for {idx_name} in {tf}, checking cooldown...")
+                if bar_key not in last_bar_key and cooldown_ok("INDEX", idx_name, tf, direction):
+                    last_bar_key.add(bar_key)
+                    print(f"Sending consolidation alert for {idx_name} in {tf}")
+                    msg = make_msg(idx_name, tf, direction, low, high, last_close, False, "INDIA", special_alert=True)
+                    chart_buf = plot_doji_chart(df, idx_name, tf, direction, low, high, last_close)
+                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
+
+    print("Scanning Stocks...")
+    for sym in TOP15_STOCKS_NS:
+        for tf in STOCK_TFS:
+            print(f"Fetching data for {sym} with timeframe {tf}...")
+            df = fetch_yf_ohlc(sym, tf)
+            if df.empty:
+                print(f"No data found for {sym} with {tf}")
+                continue
+            trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
+            print(f"Doji check {sym=} {tf=}, trig={trig}, prime={prime}")
+            if trig:
+                bar_key = ("STOCK", sym, tf, bar_ts, direction)
+                print(f"Found breakout for {sym} in {tf}, checking cooldown...")
+                if bar_key not in last_bar_key and cooldown_ok("STOCK", sym, tf, direction):
+                    last_bar_key.add(bar_key)
+                    print(f"Sending alert for {sym} in {tf}")
+                    msg = make_msg(sym, tf, direction, low, high, last_close, prime, "INDIA")
+                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
+                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
+            else:
+                print(f"No breakout found for {sym} in {tf}")
+
+            cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
+            if cons:
+                bar_key = ("STOCK_CONS", sym, tf, bar_ts, direction)
+                print(f"Found consolidation for {sym} in {tf}, checking cooldown...")
+                if bar_key not in last_bar_key and cooldown_ok("STOCK", sym, tf, direction):
+                    last_bar_key.add(bar_key)
+                    print(f"Sending consolidation alert for {sym} in {tf}")
+                    msg = make_msg(sym, tf, direction, low, high, last_close, False, "INDIA", special_alert=True)
+                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
+                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
+
+    print("Finished scanning India.")
 
 def main_loop():
     while True:
