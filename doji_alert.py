@@ -334,7 +334,6 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
                     chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
                     send_telegram(bot_token, [msg], chart_buf)
 
-
 def scan_crypto():
     scan_market("CRYPTO", CRYPTO_SYMBOLS, CRYPTO_TFS, CRYPTO_BOT_TOKEN)
 
