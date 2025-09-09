@@ -287,113 +287,67 @@ def first_working_ticker(symbol_aliases, tf):
 
 # Scan functions...
 
-def scan_crypto():
-    for sym in CRYPTO_SYMBOLS:
-        for tf in CRYPTO_TFS:
-            df = fetch_crypto_ohlc(sym, tf, limit=8)
-            if df.empty or len(df) < 3:
-                continue
-            trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
-            if trig:
-                bar_key = ("CRYPTO", sym, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok("CRYPTO", sym, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(sym, tf, direction, low, high, last_close, prime, "CRYPTO")
-                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
-                    send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)
-            cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
-            if cons:
-                bar_key = ("CRYPTO_CONS", sym, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok("CRYPTO", sym, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(sym, tf, direction, low, high, last_close, False, "CRYPTO", special_alert=True)
-                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
-                    send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)
-
-            # Multi Inside Candle Alert
-            multi_trig, direction, low, high, last_close, bar_ts = detect_multi_inside_breakout(df)
-            if multi_trig:
-                bar_key = ("CRYPTO_INSIDE", sym, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok("CRYPTO", sym, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(sym, tf, direction, low, high, last_close, False, "CRYPTO", special_alert=True)
-                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
-                    send_telegram(CRYPTO_BOT_TOKEN, [msg], chart_buf)
-
-def scan_india():
-    if not is_india_market_hours():
+def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info=""):
+    if market_name == "INDIA" and not is_india_market_hours():
         print("Market closed")
         return
+
+    for symbol in symbols_list:
+        for tf in timeframes:
+            # Fetch data depending on market
+            if market_name == "CRYPTO":
+                df = fetch_crypto_ohlc(symbol, tf, limit=8)
+            else:
+                df = fetch_yf_ohlc(symbol, tf)
+
+            print(f"Fetching {symbol=} {tf=}, rows={len(df)} {extra_info}")
+            if df.empty or len(df) < 3:
+                continue
+
+            # Doji breakout
+            trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
+            if trig:
+                bar_key = (market_name, symbol, tf, bar_ts, direction)
+                if bar_key not in last_bar_key and cooldown_ok(market_name, symbol, tf, direction):
+                    last_bar_key.add(bar_key)
+                    msg = make_msg(symbol, tf, direction, low, high, last_close, prime, market_name)
+                    chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
+                    send_telegram(bot_token, [msg], chart_buf)
+
+            # Consolidation breakout
+            cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
+            if cons:
+                bar_key = (market_name + "_CONS", symbol, tf, bar_ts, direction)
+                if bar_key not in last_bar_key and cooldown_ok(market_name, symbol, tf, direction):
+                    last_bar_key.add(bar_key)
+                    msg = make_msg(symbol, tf, direction, low, high, last_close, False, market_name, special_alert=True)
+                    chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
+                    send_telegram(bot_token, [msg], chart_buf)
+
+            # Multi Inside Candle breakout
+            multi_trig, direction, low, high, last_close, bar_ts = detect_multi_inside_breakout(df)
+            if multi_trig:
+                bar_key = (market_name + "_INSIDE", symbol, tf, bar_ts, direction)
+                if bar_key not in last_bar_key and cooldown_ok(market_name, symbol, tf, direction):
+                    last_bar_key.add(bar_key)
+                    msg = make_msg(symbol, tf, direction, low, high, last_close, False, market_name, special_alert=True)
+                    chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
+                    send_telegram(bot_token, [msg], chart_buf)
+
+
+def scan_crypto():
+    scan_market("CRYPTO", CRYPTO_SYMBOLS, CRYPTO_TFS, CRYPTO_BOT_TOKEN)
+
+
+def scan_india():
+    # Scan Indices
     for idx_name, aliases in INDICES_MAP.items():
-        for tf in INDEX_TFS:
-            alias, df = first_working_ticker(aliases, tf)
-            print(f"Fetching {idx_name=} {alias=} {tf=}, rows={len(df)}")
-            if not alias or df.empty:
-                continue
+        alias, df = first_working_ticker(aliases, INDEX_TFS[0])
+        if alias and not df.empty:
+            scan_market("INDIA", [alias], INDEX_TFS, INDIA_BOT_TOKEN, extra_info=f"(Index: {idx_name})")
 
-            trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
-            if trig:
-                bar_key = ("INDEX", idx_name, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok("INDEX", idx_name, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(idx_name, tf, direction, low, high, last_close, prime, "INDIA")
-                    chart_buf = plot_doji_chart(df, idx_name, tf, direction, low, high, last_close)
-                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
-
-            cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
-            if cons:
-                bar_key = ("INDEX_CONS", idx_name, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok("INDEX", idx_name, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(idx_name, tf, direction, low, high, last_close, False, "INDIA", special_alert=True)
-                    chart_buf = plot_doji_chart(df, idx_name, tf, direction, low, high, last_close)
-                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
-
-            # Multi Inside Candle Alert
-            multi_trig, direction, low, high, last_close, bar_ts = detect_multi_inside_breakout(df)
-            if multi_trig:
-                bar_key = ("INDEX_INSIDE", idx_name, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok("INDEX", idx_name, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(idx_name, tf, direction, low, high, last_close, False, "INDIA", special_alert=True)
-                    chart_buf = plot_doji_chart(df, idx_name, tf, direction, low, high, last_close)
-                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
-
-    for sym in TOP15_STOCKS_NS:
-        for tf in STOCK_TFS:
-            df = fetch_yf_ohlc(sym, tf)
-            print(f"Fetching {sym=} {tf=}, rows={len(df)}")
-            if df.empty:
-                continue
-
-            trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
-            if trig:
-                bar_key = ("STOCK", sym, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok("STOCK", sym, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(sym, tf, direction, low, high, last_close, prime, "INDIA")
-                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
-                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
-
-            cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
-            if cons:
-                bar_key = ("STOCK_CONS", sym, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok("STOCK", sym, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(sym, tf, direction, low, high, last_close, False, "INDIA", special_alert=True)
-                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
-                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
-
-            # Multi Inside Candle Alert
-            multi_trig, direction, low, high, last_close, bar_ts = detect_multi_inside_breakout(df)
-            if multi_trig:
-                bar_key = ("STOCK_INSIDE", sym, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok("STOCK", sym, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(sym, tf, direction, low, high, last_close, False, "INDIA", special_alert=True)
-                    chart_buf = plot_doji_chart(df, sym, tf, direction, low, high, last_close)
-                    send_telegram(INDIA_BOT_TOKEN, [msg], chart_buf)
-
+    # Scan Stocks
+    scan_market("INDIA", TOP15_STOCKS_NS, STOCK_TFS, INDIA_BOT_TOKEN, extra_info="(Top Stocks)")
 
 def main_loop():
     while True:
