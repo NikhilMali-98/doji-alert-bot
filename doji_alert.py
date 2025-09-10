@@ -245,9 +245,7 @@ def fetch_yf_ohlc(symbol, tf):
 
 def fetch_fallback_ohlc(symbol, tf):
     try:
-        # Example fallback using Alpha Vantage or Finnhub
         if ".NS" in symbol or "^" in symbol:
-            # Fallback for indices/stocks
             url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"
             resp = requests.get(url).json()
             data = resp.get("Time Series (Daily)", {})
@@ -263,11 +261,20 @@ def fetch_fallback_ohlc(symbol, tf):
                 })
             return pd.DataFrame(rows).sort_values("time").reset_index(drop=True)
         else:
-            # Fallback for crypto using Finnhub (example, not fully implemented)
             url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
             resp = requests.get(url).json()
-            # Process accordingly
-            return pd.DataFrame()
+            if not resp or "c" not in resp:
+                print(f"Finnhub invalid data for {symbol}")
+                return pd.DataFrame()
+            now = pd.Timestamp.utcnow()
+            return pd.DataFrame([{
+                "time": now,
+                "open": resp.get("o", 0),
+                "high": resp.get("h", 0),
+                "low": resp.get("l", 0),
+                "close": resp.get("c", 0),
+                "volume": resp.get("v", 0)
+            }])
     except Exception as e:
         print(f"Fallback fetch error {symbol}: {e}")
         return pd.DataFrame()
@@ -285,21 +292,16 @@ def first_working_ticker(symbol_aliases, tf):
             return alt, df
     return "", pd.DataFrame()
 
-# Scan functions...
-
 def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info=""):
     if market_name == "INDIA" and not is_india_market_hours():
         print("Market closed")
         return
-
     for symbol in symbols_list:
         for tf in timeframes:
-            # Fetch data depending on market
             if market_name == "CRYPTO":
                 df = fetch_crypto_ohlc(symbol, tf, limit=8)
             else:
                 df = fetch_yf_ohlc(symbol, tf)
-
             print(f"Fetching {symbol=} {tf=}, rows={len(df)} {extra_info}")
             if df.empty or len(df) < 3:
                 continue
@@ -337,22 +339,24 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
 def scan_crypto():
     scan_market("CRYPTO", CRYPTO_SYMBOLS, CRYPTO_TFS, CRYPTO_BOT_TOKEN)
 
-
 def scan_india():
-    # Scan Indices
+    print("Starting scan_india...")
     for idx_name, aliases in INDICES_MAP.items():
         alias, df = first_working_ticker(aliases, INDEX_TFS[0])
         if alias and not df.empty:
+            print(f"Scanning Index {idx_name}: {alias}, rows={len(df)}")
             scan_market("INDIA", [alias], INDEX_TFS, INDIA_BOT_TOKEN, extra_info=f"(Index: {idx_name})")
+        else:
+            print(f"Index {idx_name} not found or empty.")
 
-    # Scan Stocks
+    print("Scanning top stocks...")
     scan_market("INDIA", TOP15_STOCKS_NS, STOCK_TFS, INDIA_BOT_TOKEN, extra_info="(Top Stocks)")
 
 def main_loop():
     while True:
         try:
             scan_crypto()
-            scan_india() 
+            scan_india()
         except Exception as e:
             print("Main loop error:", e)
         time.sleep(300)
