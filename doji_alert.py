@@ -14,7 +14,7 @@ FINNHUB_KEY = "d304v11r01qnmrsd01k0d304v11r01qnmrsd01kg"
 
 # Bot Configuration
 CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
-INDIA_BOT_TOKEN  = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
+INDIA_BOT_TOKEN = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
 CHAT_IDS = ["1343842801", "1269772473"]
 SEPARATOR = "━━━━━━━✦✧✦━━━━━━━"
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -40,8 +40,9 @@ STOCK_TFS = ["1h", "2h", "4h", "1d", "1w", "1M"]
 BINANCE = Client()
 last_alert_at = {}
 last_bar_key = set()
+alpha_cache = {"last_time": 0, "data": {}}
+finnhub_cache = {"last_time": 0, "data": {}}
 
-# Timezone helpers
 def ist_now_str():
     return datetime.now(IST).strftime("%Y-%m-%d %H:%M")
 
@@ -99,9 +100,10 @@ def is_doji(open_, high, low, close, volume=None):
         return True, False
     return False, False
 
+# Updated to trigger alert when high/low tries to break the zone immediately
 def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
     if df_ohlc is None or len(df_ohlc) < 3:
-        return (False, None, None, None, None, False, None)
+        return False, None, None, None, None, False, None
     candles = df_ohlc.iloc[:-1]
     breakout_candle = df_ohlc.iloc[-1]
     doji_indices = []
@@ -116,7 +118,7 @@ def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
         else:
             break
     if len(doji_indices) < 2:
-        return (False, None, None, None, None, False, None)
+        return False, None, None, None, None, False, None
     doji_candles = candles.iloc[min(doji_indices):]
     body_high = max(doji_candles[["open","close"]].max())
     body_low  = min(doji_candles[["open","close"]].min())
@@ -126,13 +128,14 @@ def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
     elif breakout_candle["low"] < body_low:
         direction = "DOWN ✅"
     if not direction:
-        return (False, None, None, None, None, False, None)
+        return False, None, None, None, None, False, None
     bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
-    return (True, direction, body_low, body_high, breakout_candle["close"], prime_found, bar_ts)
+    return True, direction, body_low, body_high, breakout_candle["close"], prime_found, bar_ts
 
+# Updated to trigger alert when high/low tries to break the zone immediately
 def detect_consolidation_breakout(df_ohlc: pd.DataFrame):
     if df_ohlc is None or len(df_ohlc) < 4:
-        return (False, None, None, None, None, None)
+        return False, None, None, None, None, None
     candles = df_ohlc.iloc[:-1]
     breakout_candle = df_ohlc.iloc[-1]
     last_3 = candles.iloc[-3:]
@@ -140,17 +143,23 @@ def detect_consolidation_breakout(df_ohlc: pd.DataFrame):
     total_range = last_3["high"].max() - last_3["low"].min()
     if total_range == 0:
         return False, None, None, None, None, None
-    if all(body_ranges <= 0.05 * total_range) and breakout_candle["close"] > last_3["high"].max():
+    if all(body_ranges <= 0.05 * total_range):
         body_low = last_3["low"].min()
         body_high = last_3["high"].max()
         last_close = breakout_candle["close"]
         bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
-        return True, "UP ✅", body_low, body_high, last_close, bar_ts
+        if breakout_candle["high"] > body_high:
+            direction = "UP ✅"
+            return True, direction, body_low, body_high, last_close, bar_ts
+        elif breakout_candle["low"] < body_low:
+            direction = "DOWN ✅"
+            return True, direction, body_low, body_high, last_close, bar_ts
     return False, None, None, None, None, None
 
+# Updated to trigger alert when high/low tries to break the zone immediately
 def detect_multi_inside_breakout(df_ohlc: pd.DataFrame):
     if df_ohlc is None or len(df_ohlc) < 4:
-        return (False, None, None, None, None, None)
+        return False, None, None, None, None, None
     candles = df_ohlc.iloc[:-1]
     breakout_candle = df_ohlc.iloc[-1]
     inside_count = 0
@@ -220,7 +229,6 @@ def fetch_crypto_ohlc(symbol, interval, limit=6):
         rows = [{"open": float(c[1]), "high": float(c[2]), "low": float(c[3]), "close": float(c[4]), "volume": float(c[5]), "close_time": int(c[6])} for c in kl]
         return pd.DataFrame(rows)
     except Exception as e:
-        print(f"Crypto fetch error {symbol} {interval}: {e}")
         return pd.DataFrame()
 
 def fetch_yf_ohlc(symbol, tf):
@@ -232,23 +240,31 @@ def fetch_yf_ohlc(symbol, tf):
         if hist.empty:
             hist = t.history(period="1mo", interval="1d")
         if hist.empty:
-            print(f"No data in yfinance for {symbol}, trying fallback APIs...")
             return fetch_fallback_ohlc(symbol, tf)
         df = hist[["Open","High","Low","Close","Volume"]].rename(columns={"Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"})
         df.index = pd.to_datetime(df.index).tz_localize(None)
         rule = tf_to_pandas(tf)
         ohlc = df.resample(rule, label="right", closed="right").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
         return ohlc.tail(100).reset_index().rename(columns={"Datetime":"time","Date":"time"})
-    except Exception as e:
-        print(f"YF fetch error {symbol} {tf}: {e}")
+    except Exception:
         return fetch_fallback_ohlc(symbol, tf)
 
 def fetch_fallback_ohlc(symbol, tf):
     try:
         if ".NS" in symbol or "^" in symbol:
-            url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"
-            resp = requests.get(url).json()
-            data = resp.get("Time Series (Daily)", {})
+            now = time.time()
+            if now - alpha_cache["last_time"] > 15:
+                alpha_cache["last_time"] = now
+                alpha_cache["data"] = {}
+            if symbol not in alpha_cache["data"]:
+                url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"
+                resp = requests.get(url)
+                if resp.status_code == 200:
+                    data = resp.json().get("Time Series (Daily)", {})
+                    alpha_cache["data"][symbol] = data
+                else:
+                    alpha_cache["data"][symbol] = {}
+            data = alpha_cache["data"].get(symbol, {})
             rows = []
             for date, values in list(data.items())[:100]:
                 rows.append({
@@ -261,22 +277,8 @@ def fetch_fallback_ohlc(symbol, tf):
                 })
             return pd.DataFrame(rows).sort_values("time").reset_index(drop=True)
         else:
-            url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_KEY}"
-            resp = requests.get(url).json()
-            if not resp or "c" not in resp:
-                print(f"Finnhub invalid data for {symbol}")
-                return pd.DataFrame()
-            now = pd.Timestamp.utcnow()
-            return pd.DataFrame([{
-                "time": now,
-                "open": resp.get("o", 0),
-                "high": resp.get("h", 0),
-                "low": resp.get("l", 0),
-                "close": resp.get("c", 0),
-                "volume": resp.get("v", 0)
-            }])
-    except Exception as e:
-        print(f"Fallback fetch error {symbol}: {e}")
+            return pd.DataFrame()
+    except Exception:
         return pd.DataFrame()
 
 def first_working_ticker(symbol_aliases, tf):
@@ -284,29 +286,25 @@ def first_working_ticker(symbol_aliases, tf):
         df = fetch_yf_ohlc(s, tf)
         if not df.empty:
             return s, df
-    first = symbol_aliases[0]
-    if ".NS" in first:
-        alt = first.replace(".NS", ".BO")
-        df = fetch_yf_ohlc(alt, tf)
-        if not df.empty:
-            return alt, df
     return "", pd.DataFrame()
 
 def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info=""):
     if market_name == "INDIA" and not is_india_market_hours():
         print("Market closed")
         return
+
     for symbol in symbols_list:
         for tf in timeframes:
             if market_name == "CRYPTO":
                 df = fetch_crypto_ohlc(symbol, tf, limit=8)
             else:
                 df = fetch_yf_ohlc(symbol, tf)
-            print(f"Fetching {symbol=} {tf=}, rows={len(df)} {extra_info}")
+
             if df.empty or len(df) < 3:
+                if market_name == "INDIA":
+                    print(f"Error: No data for {symbol} at {tf}")
                 continue
 
-            # Doji breakout
             trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
             if trig:
                 bar_key = (market_name, symbol, tf, bar_ts, direction)
@@ -316,7 +314,6 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
                     chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
                     send_telegram(bot_token, [msg], chart_buf)
 
-            # Consolidation breakout
             cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
             if cons:
                 bar_key = (market_name + "_CONS", symbol, tf, bar_ts, direction)
@@ -326,7 +323,6 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
                     chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
                     send_telegram(bot_token, [msg], chart_buf)
 
-            # Multi Inside Candle breakout
             multi_trig, direction, low, high, last_close, bar_ts = detect_multi_inside_breakout(df)
             if multi_trig:
                 bar_key = (market_name + "_INSIDE", symbol, tf, bar_ts, direction)
@@ -340,16 +336,10 @@ def scan_crypto():
     scan_market("CRYPTO", CRYPTO_SYMBOLS, CRYPTO_TFS, CRYPTO_BOT_TOKEN)
 
 def scan_india():
-    print("Starting scan_india...")
     for idx_name, aliases in INDICES_MAP.items():
         alias, df = first_working_ticker(aliases, INDEX_TFS[0])
         if alias and not df.empty:
-            print(f"Scanning Index {idx_name}: {alias}, rows={len(df)}")
             scan_market("INDIA", [alias], INDEX_TFS, INDIA_BOT_TOKEN, extra_info=f"(Index: {idx_name})")
-        else:
-            print(f"Index {idx_name} not found or empty.")
-
-    print("Scanning top stocks...")
     scan_market("INDIA", TOP15_STOCKS_NS, STOCK_TFS, INDIA_BOT_TOKEN, extra_info="(Top Stocks)")
 
 def main_loop():
@@ -358,7 +348,7 @@ def main_loop():
             scan_crypto()
             scan_india()
         except Exception as e:
-            print("Main loop error:", e)
+            print(f"Main loop error: {e}")
         time.sleep(300)
 
 if __name__ == "__main__":
