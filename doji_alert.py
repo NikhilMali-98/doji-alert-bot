@@ -38,6 +38,23 @@ TOP15_STOCKS_NS = [
 INDEX_TFS = ["15m", "1h", "2h", "4h", "1d", "1w", "1M"]
 STOCK_TFS = ["1h", "2h", "4h", "1d", "1w", "1M"]
 BINANCE = Client()
+
+# API Rate Limits
+API_RATE_LIMITS = {
+    "ALPHA_VANTAGE": {
+        "max_calls_per_minute": 5,
+        "cooldown_seconds": 60
+    },
+    "FINNHUB": {
+        "max_calls_per_minute": 60,
+        "cooldown_seconds": 60
+    }
+}
+api_usage = {
+    "ALPHA_VANTAGE": {"last_reset": time.time(), "calls": 0},
+    "FINNHUB": {"last_reset": time.time(), "calls": 0}
+}
+
 last_alert_at = {}
 last_bar_key = set()
 alpha_cache = {"last_time": 0, "data": {}}
@@ -71,6 +88,19 @@ def cooldown_ok(market: str, symbol: str, tf: str, direction: str) -> bool:
         return True
     return False
 
+def check_api_limit(api_name):
+    usage = api_usage[api_name]
+    now = time.time()
+    if now - usage["last_reset"] > 60:
+        usage["last_reset"] = now
+        usage["calls"] = 0
+    if usage["calls"] < API_RATE_LIMITS[api_name]["max_calls_per_minute"]:
+        usage["calls"] += 1
+        return True
+    else:
+        print(f"{ist_now_str()} - API limit hit for {api_name}, skipping request")
+        return False
+
 def send_telegram(bot_token: str, messages: list[str], image_buf=None):
     if not messages:
         return
@@ -100,7 +130,6 @@ def is_doji(open_, high, low, close, volume=None):
         return True, False
     return False, False
 
-# Updated to trigger alert when high/low tries to break the zone immediately
 def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
     if df_ohlc is None or len(df_ohlc) < 3:
         return False, None, None, None, None, False, None
@@ -132,7 +161,6 @@ def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
     bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
     return True, direction, body_low, body_high, breakout_candle["close"], prime_found, bar_ts
 
-# Updated to trigger alert when high/low tries to break the zone immediately
 def detect_consolidation_breakout(df_ohlc: pd.DataFrame):
     if df_ohlc is None or len(df_ohlc) < 4:
         return False, None, None, None, None, None
@@ -156,7 +184,6 @@ def detect_consolidation_breakout(df_ohlc: pd.DataFrame):
             return True, direction, body_low, body_high, last_close, bar_ts
     return False, None, None, None, None, None
 
-# Updated to trigger alert when high/low tries to break the zone immediately
 def detect_multi_inside_breakout(df_ohlc: pd.DataFrame):
     if df_ohlc is None or len(df_ohlc) < 4:
         return False, None, None, None, None, None
@@ -229,6 +256,7 @@ def fetch_crypto_ohlc(symbol, interval, limit=6):
         rows = [{"open": float(c[1]), "high": float(c[2]), "low": float(c[3]), "close": float(c[4]), "volume": float(c[5]), "close_time": int(c[6])} for c in kl]
         return pd.DataFrame(rows)
     except Exception as e:
+        print(f"{ist_now_str()} - Binance error for {symbol}: {e}")
         return pd.DataFrame()
 
 def fetch_yf_ohlc(symbol, tf):
@@ -240,29 +268,35 @@ def fetch_yf_ohlc(symbol, tf):
         if hist.empty:
             hist = t.history(period="1mo", interval="1d")
         if hist.empty:
+            print(f"{ist_now_str()} - Yahoo Finance empty for {symbol}, falling back")
             return fetch_fallback_ohlc(symbol, tf)
         df = hist[["Open","High","Low","Close","Volume"]].rename(columns={"Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"})
         df.index = pd.to_datetime(df.index).tz_localize(None)
         rule = tf_to_pandas(tf)
         ohlc = df.resample(rule, label="right", closed="right").agg({"open":"first","high":"max","low":"min","close":"last","volume":"sum"}).dropna()
         return ohlc.tail(100).reset_index().rename(columns={"Datetime":"time","Date":"time"})
-    except Exception:
+    except Exception as e:
+        print(f"{ist_now_str()} - Yahoo error for {symbol}: {e}")
         return fetch_fallback_ohlc(symbol, tf)
 
 def fetch_fallback_ohlc(symbol, tf):
     try:
         if ".NS" in symbol or "^" in symbol:
             now = time.time()
-            if now - alpha_cache["last_time"] > 15:
+            if now - alpha_cache["last_time"] > API_RATE_LIMITS["ALPHA_VANTAGE"]["cooldown_seconds"]:
                 alpha_cache["last_time"] = now
                 alpha_cache["data"] = {}
+            if not check_api_limit("ALPHA_VANTAGE"):
+                return pd.DataFrame()
             if symbol not in alpha_cache["data"]:
                 url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&apikey={ALPHA_VANTAGE_KEY}"
                 resp = requests.get(url)
                 if resp.status_code == 200:
                     data = resp.json().get("Time Series (Daily)", {})
                     alpha_cache["data"][symbol] = data
+                    print(f"{ist_now_str()} - Alpha Vantage data fetched for {symbol}")
                 else:
+                    print(f"{ist_now_str()} - Alpha Vantage failed for {symbol}: {resp.status_code}")
                     alpha_cache["data"][symbol] = {}
             data = alpha_cache["data"].get(symbol, {})
             rows = []
@@ -278,7 +312,8 @@ def fetch_fallback_ohlc(symbol, tf):
             return pd.DataFrame(rows).sort_values("time").reset_index(drop=True)
         else:
             return pd.DataFrame()
-    except Exception:
+    except Exception as e:
+        print(f"{ist_now_str()} - Fallback error for {symbol}: {e}")
         return pd.DataFrame()
 
 def first_working_ticker(symbol_aliases, tf):
@@ -290,21 +325,18 @@ def first_working_ticker(symbol_aliases, tf):
 
 def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info=""):
     if market_name == "INDIA" and not is_india_market_hours():
-        print("Market closed")
+        print(f"{ist_now_str()} - India market closed")
         return
-
     for symbol in symbols_list:
         for tf in timeframes:
+            print(f"{ist_now_str()} - Scanning {symbol} {tf}")
             if market_name == "CRYPTO":
                 df = fetch_crypto_ohlc(symbol, tf, limit=8)
             else:
                 df = fetch_yf_ohlc(symbol, tf)
-
             if df.empty or len(df) < 3:
-                if market_name == "INDIA":
-                    print(f"Error: No data for {symbol} at {tf}")
+                print(f"{ist_now_str()} - No data for {symbol} at {tf}")
                 continue
-
             trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
             if trig:
                 bar_key = (market_name, symbol, tf, bar_ts, direction)
@@ -313,7 +345,7 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
                     msg = make_msg(symbol, tf, direction, low, high, last_close, prime, market_name)
                     chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
                     send_telegram(bot_token, [msg], chart_buf)
-
+                    print(f"{ist_now_str()} - Doji breakout detected for {symbol} {tf}")
             cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
             if cons:
                 bar_key = (market_name + "_CONS", symbol, tf, bar_ts, direction)
@@ -322,7 +354,7 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
                     msg = make_msg(symbol, tf, direction, low, high, last_close, False, market_name, special_alert=True)
                     chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
                     send_telegram(bot_token, [msg], chart_buf)
-
+                    print(f"{ist_now_str()} - Consolidation breakout detected for {symbol} {tf}")
             multi_trig, direction, low, high, last_close, bar_ts = detect_multi_inside_breakout(df)
             if multi_trig:
                 bar_key = (market_name + "_INSIDE", symbol, tf, bar_ts, direction)
@@ -331,6 +363,7 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
                     msg = make_msg(symbol, tf, direction, low, high, last_close, False, market_name, special_alert=True)
                     chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
                     send_telegram(bot_token, [msg], chart_buf)
+                    print(f"{ist_now_str()} - Multi inside breakout detected for {symbol} {tf}")
 
 def scan_crypto():
     scan_market("CRYPTO", CRYPTO_SYMBOLS, CRYPTO_TFS, CRYPTO_BOT_TOKEN)
@@ -348,8 +381,9 @@ def main_loop():
             scan_crypto()
             scan_india()
         except Exception as e:
-            print(f"Main loop error: {e}")
+            print(f"{ist_now_str()} - Main loop error: {e}")
         time.sleep(300)
 
 if __name__ == "__main__":
+    print(f"{ist_now_str()} - Starting bot...")
     main_loop()
