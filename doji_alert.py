@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta, timezone
 from binance.client import Client
 from apscheduler.schedulers.background import BackgroundScheduler
+import io
 
 # API Keys
 ALPHA_VANTAGE_KEY = "4BA9H4URO6LTAXY9"
@@ -66,7 +67,7 @@ def tf_to_pandas(tf: str) -> str:
     return {
         "5m": "5min", "15m": "15min", "30m": "30min",
         "1h": "1h", "2h": "2h", "4h": "4h",
-        "1d": "1D", "1w": "1W", "1M": "ME"
+        "1d": "1D", "1w": "1W", "1M": "1M"
     }[tf]
 
 def cooldown_ok(market: str, symbol: str, tf: str, direction: str) -> bool:
@@ -156,23 +157,32 @@ def detect_consolidation_breakout(df_ohlc: pd.DataFrame):
         return False, None, None, None, None, None
     candles = df_ohlc.iloc[:-1]
     breakout_candle = df_ohlc.iloc[-1]
-    last_3 = candles.iloc[-3:]
-    body_ranges = abs(last_3["open"] - last_3["close"])
-    total_range = last_3["high"].max() - last_3["low"].min()
-    if total_range == 0:
+    small_bodies = 0
+    high_vals = []
+    low_vals = []
+    for i in range(len(candles)-1, -1, -1):
+        row = candles.iloc[i]
+        body = abs(row["open"] - row["close"])
+        rng = row["high"] - row["low"]
+        if rng == 0 or body <= 0.2 * rng:
+            small_bodies += 1
+            high_vals.append(row["high"])
+            low_vals.append(row["low"])
+        else:
+            break
+    if small_bodies < 3:
         return False, None, None, None, None, None
-    if all(body_ranges <= 0.05 * total_range):
-        body_low = last_3["low"].min()
-        body_high = last_3["high"].max()
-        last_close = breakout_candle["close"]
-        bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
-        if breakout_candle["high"] > body_high:
-            direction = "UP ✅"
-            return True, direction, body_low, body_high, last_close, bar_ts
-        elif breakout_candle["low"] < body_low:
-            direction = "DOWN ✅"
-            return True, direction, body_low, body_high, last_close, bar_ts
-    return False, None, None, None, None, None
+    body_high = max(high_vals)
+    body_low = min(low_vals)
+    direction = None
+    if breakout_candle["high"] > body_high:
+        direction = "UP ✅"
+    elif breakout_candle["low"] < body_low:
+        direction = "DOWN ✅"
+    if not direction:
+        return False, None, None, None, None, None
+    bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
+    return True, direction, body_low, body_high, breakout_candle["close"], bar_ts
 
 def detect_multi_inside_breakout(df_ohlc: pd.DataFrame):
     if df_ohlc is None or len(df_ohlc) < 4:
@@ -241,11 +251,54 @@ def plot_doji_chart(df, symbol, tf, direction, low, high, last_close):
     plt.close(fig)
     return buf
 
-# Functions for data fetching, retry, cache, fallback remain same as before...
+# --- DATA FETCHING FUNCTIONS ---
 
-# ...fetch_crypto_ohlc(), fetch_yf_ohlc(), fetch_fallback_ohlc(), first_working_ticker(), etc.
+def fetch_crypto_ohlc(symbol, tf, limit=8):
+    interval = tf_to_pandas(tf)
+    try:
+        klines = BINANCE.get_klines(symbol=symbol, interval=interval, limit=limit)
+        data = []
+        for k in klines:
+            data.append({
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+                "time": k[0]
+            })
+        return pd.DataFrame(data)
+    except Exception as e:
+        print(f"{ist_now_str()} - Binance error for {symbol}: {e}")
+        return pd.DataFrame()
 
-# Scan functions
+def fetch_yf_ohlc(symbol, tf):
+    period = "30d"
+    interval = tf_to_pandas(tf)
+    try:
+        df = yf.download(symbol, period=period, interval=interval, progress=False)
+        if df.empty:
+            return df
+        df = df.rename(columns=str.lower)
+        df["time"] = df.index.view(int) // 10**6
+        return df[["open","high","low","close","volume","time"]]
+    except Exception as e:
+        print(f"{ist_now_str()} - Yahoo error for {symbol}: {e}")
+        return pd.DataFrame()
+
+def fetch_fallback_ohlc(symbol, tf):
+    # Implement fallback logic if needed
+    return pd.DataFrame()
+
+def first_working_ticker(aliases, tf):
+    for alias in aliases:
+        df = fetch_yf_ohlc(alias, tf)
+        if not df.empty:
+            return alias, df
+    return None, None
+
+# --- SCAN FUNCTIONS ---
+
 def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info=""):
     for symbol in symbols_list:
         for tf in timeframes:
@@ -255,8 +308,6 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
                 df = fetch_yf_ohlc(symbol, tf)
 
             if df.empty or len(df) < 3:
-                if market_name == "INDIA":
-                    print(f"{ist_now_str()} - Error: No data for {symbol} at {tf}")
                 continue
 
             trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
@@ -270,7 +321,7 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
 
             cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
             if cons:
-                bar_key = (market_name + "_CONS", symbol, tf, bar_ts, direction)
+                bar_key = (market_name+"_CONS", symbol, tf, bar_ts, direction)
                 if bar_key not in last_bar_key and cooldown_ok(market_name, symbol, tf, direction):
                     last_bar_key.add(bar_key)
                     msg = make_msg(symbol, tf, direction, low, high, last_close, False, market_name, special_alert=True)
@@ -279,7 +330,7 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
 
             multi_trig, direction, low, high, last_close, bar_ts = detect_multi_inside_breakout(df)
             if multi_trig:
-                bar_key = (market_name + "_INSIDE", symbol, tf, bar_ts, direction)
+                bar_key = (market_name+"_INSIDE", symbol, tf, bar_ts, direction)
                 if bar_key not in last_bar_key and cooldown_ok(market_name, symbol, tf, direction):
                     last_bar_key.add(bar_key)
                     msg = make_msg(symbol, tf, direction, low, high, last_close, False, market_name, special_alert=True)
@@ -298,24 +349,21 @@ def scan_india():
         alias, df = first_working_ticker(aliases, INDEX_TFS[0])
         if alias and not df.empty:
             print(f"{ist_now_str()} - Scanning index {idx_name} ({alias})")
-            scan_market("INDIA", [alias], INDEX_TFS, INDIA_BOT_TOKEN, extra_info=f"(Index: {idx_name})")
-        else:
-            print(f"{ist_now_str()} - Failed to get data for index {idx_name}")
-    print(f"{ist_now_str()} - Scanning top stocks")
-    scan_market("INDIA", TOP15_STOCKS_NS, STOCK_TFS, INDIA_BOT_TOKEN, extra_info="(Top Stocks)")
+            scan_market("INDIA_INDEX", [alias], INDEX_TFS, INDIA_BOT_TOKEN)
+    print(f"{ist_now_str()} - Scanning stocks")
+    scan_market("INDIA_STOCKS", TOP15_STOCKS_NS, STOCK_TFS, INDIA_BOT_TOKEN)
 
-def main_loop():
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(scan_crypto, 'interval', minutes=5)
-    scheduler.add_job(scan_india, 'interval', minutes=5)
-    scheduler.start()
-    print(f"{ist_now_str()} - Scheduler started. Running scans every 5 minutes.")
-    try:
-        while True:
-            time.sleep(60)
-    except (KeyboardInterrupt, SystemExit):
-        scheduler.shutdown()
-        print(f"{ist_now_str()} - Scheduler stopped.")
+# --- MAIN LOOP ---
 
 if __name__ == "__main__":
-    main_loop()
+    print("Starting bot...")
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(scan_crypto, 'interval', minutes=5, id="scan_crypto")
+    scheduler.add_job(scan_india, 'interval', minutes=5, id="scan_india")
+    scheduler.start()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Stopping bot...")
+        scheduler.shutdown()
