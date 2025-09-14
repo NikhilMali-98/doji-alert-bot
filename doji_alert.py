@@ -39,6 +39,19 @@ TOP15_STOCKS_NS = [
 INDEX_TFS = ["15m", "1h", "2h", "4h", "1d", "1w", "1M"]
 STOCK_TFS = ["1h", "2h", "4h", "1d", "1w", "1M"]
 
+# Binance interval mapping
+BINANCE_INTERVALS = {
+    "5m": "5m",
+    "15m": "15m",
+    "30m": "30m",
+    "1h": "1h",
+    "2h": "2h",
+    "4h": "4h",
+    "1d": "1d",
+    "1w": "1w",
+    "1M": "1M"
+}
+
 # Initialize Binance Client
 BINANCE = Client()
 
@@ -121,6 +134,7 @@ def is_doji(open_, high, low, close, volume=None):
         return True, False
     return False, False
 
+# Detection functions
 def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
     if df_ohlc is None or len(df_ohlc) < 3:
         return False, None, None, None, None, False, None
@@ -239,7 +253,6 @@ def plot_doji_chart(df, symbol, tf, direction, low, high, last_close):
         ax.add_patch(plt.Rectangle((i-0.3, min(row["open"], row["close"])),
                                    0.6, abs(row["open"]-row["close"]),
                                    color=color, alpha=0.6))
-    # Breakout lines
     ax.axhline(low, color="blue", linestyle="--", label="Range Low")
     ax.axhline(high, color="orange", linestyle="--", label="Range High")
     ax.axhline(last_close, color="black", linestyle=":", label="Last Close")
@@ -254,7 +267,10 @@ def plot_doji_chart(df, symbol, tf, direction, low, high, last_close):
 # --- DATA FETCHING FUNCTIONS ---
 
 def fetch_crypto_ohlc(symbol, tf, limit=8):
-    interval = tf_to_pandas(tf)
+    interval = BINANCE_INTERVALS.get(tf)
+    if not interval:
+        print(f"{ist_now_str()} - Binance invalid interval for {symbol}: {tf}")
+        return pd.DataFrame()
     try:
         klines = BINANCE.get_klines(symbol=symbol, interval=interval, limit=limit)
         data = []
@@ -287,7 +303,6 @@ def fetch_yf_ohlc(symbol, tf):
         return pd.DataFrame()
 
 def fetch_fallback_ohlc(symbol, tf):
-    # Implement fallback logic if needed
     return pd.DataFrame()
 
 def first_working_ticker(aliases, tf):
