@@ -38,18 +38,9 @@ TOP15_STOCKS_NS = [
 ]
 INDEX_TFS = ["15m", "1h", "2h", "4h", "1d", "1w", "1M"]
 STOCK_TFS = ["1h", "2h", "4h", "1d", "1w", "1M"]
-
-# Binance interval mapping
 BINANCE_INTERVALS = {
-    "5m": "5m",
-    "15m": "15m",
-    "30m": "30m",
-    "1h": "1h",
-    "2h": "2h",
-    "4h": "4h",
-    "1d": "1d",
-    "1w": "1w",
-    "1M": "1M"
+    "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h",
+    "2h": "2h", "4h": "4h", "1d": "1d", "1w": "1w", "1M": "1M"
 }
 
 # Initialize Binance Client
@@ -134,7 +125,6 @@ def is_doji(open_, high, low, close, volume=None):
         return True, False
     return False, False
 
-# Detection functions
 def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
     if df_ohlc is None or len(df_ohlc) < 3:
         return False, None, None, None, None, False, None
@@ -264,8 +254,6 @@ def plot_doji_chart(df, symbol, tf, direction, low, high, last_close):
     plt.close(fig)
     return buf
 
-# --- DATA FETCHING FUNCTIONS ---
-
 def fetch_crypto_ohlc(symbol, tf, limit=8):
     interval = BINANCE_INTERVALS.get(tf)
     if not interval:
@@ -312,8 +300,6 @@ def first_working_ticker(aliases, tf):
             return alias, df
     return None, None
 
-# --- SCAN FUNCTIONS ---
-
 def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info=""):
     for symbol in symbols_list:
         for tf in timeframes:
@@ -321,10 +307,8 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
                 df = fetch_crypto_ohlc(symbol, tf, limit=8)
             else:
                 df = fetch_yf_ohlc(symbol, tf)
-
             if df.empty or len(df) < 3:
                 continue
-
             trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
             if trig:
                 bar_key = (market_name, symbol, tf, bar_ts, direction)
@@ -333,7 +317,6 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
                     msg = make_msg(symbol, tf, direction, low, high, last_close, prime, market_name)
                     chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
                     send_telegram(bot_token, [msg], chart_buf)
-
             cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
             if cons:
                 bar_key = (market_name+"_CONS", symbol, tf, bar_ts, direction)
@@ -342,7 +325,6 @@ def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info="")
                     msg = make_msg(symbol, tf, direction, low, high, last_close, False, market_name, special_alert=True)
                     chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
                     send_telegram(bot_token, [msg], chart_buf)
-
             multi_trig, direction, low, high, last_close, bar_ts = detect_multi_inside_breakout(df)
             if multi_trig:
                 bar_key = (market_name+"_INSIDE", symbol, tf, bar_ts, direction)
@@ -368,17 +350,16 @@ def scan_india():
     print(f"{ist_now_str()} - Scanning stocks")
     scan_market("INDIA_STOCKS", TOP15_STOCKS_NS, STOCK_TFS, INDIA_BOT_TOKEN)
 
-# --- MAIN LOOP ---
-
 if __name__ == "__main__":
     print("Starting bot...")
     scheduler = BackgroundScheduler()
     scheduler.add_job(scan_crypto, 'interval', minutes=5, id="scan_crypto")
     scheduler.add_job(scan_india, 'interval', minutes=5, id="scan_india")
     scheduler.start()
+    print("Scheduler started. Press Ctrl+C to exit.")
     try:
         while True:
-            time.sleep(1)
+            time.sleep(10)
     except KeyboardInterrupt:
         print("Stopping bot...")
         scheduler.shutdown()
