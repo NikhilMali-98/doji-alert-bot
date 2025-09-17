@@ -68,11 +68,18 @@ def is_india_market_hours():
     return start <= now <= end
 
 def tf_to_pandas(tf: str) -> str:
-    return {
-        "5m": "5min", "15m": "15min", "30m": "30min",
-        "1h": "1h", "2h": "2h", "4h": "4h",
-        "1d": "1D", "1w": "1W", "1M": "1M"
-    }[tf]
+    mapping = {
+        "5m": "5min",
+        "15m": "15min",
+        "30m": "30min",
+        "1h": "60min",
+        "2h": "60min",  # fallback
+        "4h": "4h",
+        "1d": "1d",
+        "1w": "1wk",
+        "1M": "1mo"
+    }
+    return mapping.get(tf, tf)
 
 def cooldown_ok(market: str, symbol: str, tf: str, direction: str) -> bool:
     key = (market, symbol, tf, direction)
@@ -280,9 +287,9 @@ def fetch_yf_ohlc(symbol, tf):
     period = "30d"
     interval = tf_to_pandas(tf)
     try:
-        df = yf.download(symbol, period=period, interval=interval, progress=False)
-        if df.empty:
-            return df
+        df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=True)
+        if df.empty or len(df) < 3:
+            return pd.DataFrame()
         df = df.rename(columns=str.lower)
         df["time"] = df.index.view(int) // 10**6
         return df[["open","high","low","close","volume","time"]]
@@ -296,7 +303,7 @@ def fetch_fallback_ohlc(symbol, tf):
 def first_working_ticker(aliases, tf):
     for alias in aliases:
         df = fetch_yf_ohlc(alias, tf)
-        if not df.empty:
+        if not df.empty and len(df) >= 3:
             return alias, df
     return None, None
 
