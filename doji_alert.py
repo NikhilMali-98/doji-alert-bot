@@ -43,10 +43,8 @@ BINANCE_INTERVALS = {
     "2h": "2h", "4h": "4h", "1d": "1d", "1w": "1w", "1M": "1M"
 }
 
-# Initialize Binance Client
 BINANCE = Client()
 
-# State tracking
 last_alert_at = {}
 last_bar_key = set()
 alpha_cache = {"last_time": 0, "data": {}}
@@ -126,17 +124,20 @@ def is_doji(open_, high, low, close, volume=None):
     return False, False
 
 def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
-    if df_ohlc is None or len(df_ohlc) < 3:
+    if df_ohlc.empty or df_ohlc.isnull().all().all() or len(df_ohlc) < 3:
         return False, None, None, None, None, False, None
-    candles = df_ohlc.iloc[:-1]
+    candles = df_ohlc.iloc[:-1].dropna(subset=["open","high","low","close"])
     breakout_candle = df_ohlc.iloc[-1]
+    if any(pd.isna([breakout_candle.get("open"), breakout_candle.get("high"),
+                    breakout_candle.get("low"), breakout_candle.get("close")])):
+        return False, None, None, None, None, False, None
     doji_indices = []
     prime_found = False
     for i in range(len(candles)-1, -1, -1):
         row = candles.iloc[i]
-        if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
+        if any(pd.isna([row.get("open"), row.get("high"), row.get("low"), row.get("close")])):
             continue
-        d, p = is_doji(row["open"], row["high"], row["low"], row["close"], row.get("volume", None))
+        d, p = is_doji(row["open"], row["high"], row["low"], row["close"], row.get("volume"))
         if d:
             doji_indices.append(i)
             if p:
@@ -159,188 +160,107 @@ def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
     return True, direction, body_low, body_high, breakout_candle["close"], prime_found, bar_ts
 
 def detect_consolidation_breakout(df_ohlc: pd.DataFrame):
-    if df_ohlc is None or len(df_ohlc) < 4:
-        return False, None, None, None, None, None
-    candles = df_ohlc.iloc[:-1]
+    if df_ohlc.empty or df_ohlc.isnull().all().all() or len(df_ohlc) < 5:
+        return False, None, None, None, None, None, None
+    candles = df_ohlc.iloc[:-1].dropna(subset=["open","high","low","close"])
     breakout_candle = df_ohlc.iloc[-1]
-    small_bodies = 0
-    high_vals = []
-    low_vals = []
-    for i in range(len(candles)-1, -1, -1):
-        row = candles.iloc[i]
-        if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
-            continue
-        body = abs(row["open"] - row["close"])
-        rng = row["high"] - row["low"]
-        if rng == 0 or body <= 0.2 * rng:
-            small_bodies += 1
-            high_vals.append(row["high"])
-            low_vals.append(row["low"])
-        else:
-            break
-    if small_bodies < 3:
-        return False, None, None, None, None, None
-    body_high = max(high_vals)
-    body_low = min(low_vals)
+    if any(pd.isna([breakout_candle.get("open"), breakout_candle.get("high"),
+                    breakout_candle.get("low"), breakout_candle.get("close")])):
+        return False, None, None, None, None, None, None
+    body_high = max(candles[["open","close"]].max())
+    body_low  = min(candles[["open","close"]].min())
+    rng = body_high - body_low
+    if rng / breakout_candle["close"] > 0.005:
+        return False, None, None, None, None, None, None
     direction = None
     if breakout_candle["high"] > body_high:
-        direction = "UP ✅"
+        direction = "UP 🔥"
     elif breakout_candle["low"] < body_low:
-        direction = "DOWN ✅"
+        direction = "DOWN 🔥"
     if not direction:
-        return False, None, None, None, None, None
+        return False, None, None, None, None, None, None
     bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
-    return True, direction, body_low, body_high, breakout_candle["close"], bar_ts
+    return True, direction, body_low, body_high, breakout_candle["close"], True, bar_ts
 
 def detect_multi_inside_breakout(df_ohlc: pd.DataFrame):
-    if df_ohlc is None or len(df_ohlc) < 4:
-        return False, None, None, None, None, None
-    candles = df_ohlc.iloc[:-1]
+    if df_ohlc.empty or df_ohlc.isnull().all().all() or len(df_ohlc) < 3:
+        return False, None, None, None, None, None, None
+    candles = df_ohlc.iloc[:-1].dropna(subset=["open","high","low","close"])
     breakout_candle = df_ohlc.iloc[-1]
-    inside_count = 0
-    last_low = breakout_candle["low"]
-    last_high = breakout_candle["high"]
+    if any(pd.isna([breakout_candle.get("open"), breakout_candle.get("high"),
+                    breakout_candle.get("low"), breakout_candle.get("close")])):
+        return False, None, None, None, None, None, None
     for i in range(len(candles)-1, -1, -1):
         row = candles.iloc[i]
-        if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
+        if any(pd.isna([row.get("open"), row.get("high"), row.get("low"), row.get("close")])):
             continue
-        if row["high"] <= last_high and row["low"] >= last_low:
-            inside_count += 1
-            last_low = min(last_low, row["low"])
-            last_high = max(last_high, row["high"])
-        else:
-            break
-    if inside_count < 2:
-        return False, None, None, None, None, None
-    direction = None
-    if breakout_candle["high"] > last_high:
-        direction = "UP ✅"
-    elif breakout_candle["low"] < last_low:
-        direction = "DOWN ✅"
-    if not direction:
-        return False, None, None, None, None, None
-    bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
-    return True, direction, last_low, last_high, breakout_candle["close"], bar_ts
+        high = row["high"]
+        low = row["low"]
+        if breakout_candle["high"] > high or breakout_candle["low"] < low:
+            direction = "UP 🔼" if breakout_candle["high"] > high else "DOWN 🔽"
+            bar_ts = breakout_candle.get("close_time") or breakout_candle.get("time")
+            return True, direction, low, high, breakout_candle["close"], True, bar_ts
+    return False, None, None, None, None, None, None
 
-def make_msg(symbol, tf, direction, low, high, last_close, prime, market, special_alert=False):
-    ts = ist_now_str()
-    sym = symbol.replace("USDT", "USD") if market == "CRYPTO" else symbol
-    low_s, high_s, px_s = f"{low:.4f}", f"{high:.4f}", f"{last_close:.4f}"
-    header = ""
-    if tf in BIG_TFS:
-        header += "🔶 BIG TF 🔶\n"
-    if special_alert:
-        header += "🔥 CONSOLIDATION 🔥\n"
-    elif prime:
-        header += "🚨 PRIME 🚨\n"
-    return (
-        f"{header}🚨 {sym} | {tf} | {direction}\n"
-        f"Range: {low_s}-{high_s} | Price: {px_s}\n"
-        f"🕒 {ts} IST"
-    )
+def fetch_stock_ohlc(symbol: str, tf: str, period="30d"):
+    interval = tf_to_pandas(tf)
+    df = yf.download(symbol, period=period, interval=interval, progress=False)
+    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    df.rename(columns={"Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"}, inplace=True)
+    df.reset_index(inplace=True)
+    df["time"] = df["Datetime"].astype(int) // 10**9
+    df["close_time"] = df["time"]
+    return df
 
-def plot_doji_chart(df, symbol, tf, direction, low, high, last_close):
-    df = df.tail(10).copy()
-    fig, ax = plt.subplots(figsize=(6,4))
-    ax.set_title(f"{symbol} {tf} | {direction}", fontsize=10)
-    for i, row in df.iterrows():
-        if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
-            continue
-        color = "green" if row["close"] >= row["open"] else "red"
-        ax.plot([i,i],[row["low"], row["high"]], color=color)
-        ax.add_patch(plt.Rectangle((i-0.3, min(row["open"], row["close"])),
-                                   0.6, abs(row["open"]-row["close"]),
-                                   color=color, alpha=0.6))
-    ax.axhline(low, color="blue", linestyle="--", label="Range Low")
-    ax.axhline(high, color="orange", linestyle="--", label="Range High")
-    ax.axhline(last_close, color="black", linestyle=":", label="Last Close")
-    ax.legend(fontsize=8)
-    plt.tight_layout()
+def fetch_crypto_ohlc(symbol: str, tf: str, limit=50):
+    interval = BINANCE_INTERVALS.get(tf)
+    klines = BINANCE.get_klines(symbol=symbol, interval=interval, limit=limit)
+    df = pd.DataFrame(klines, columns=["open_time","open","high","low","close","volume",
+                                       "close_time","quote_asset_volume","number_of_trades",
+                                       "taker_buy_base_asset_volume","taker_buy_quote_asset_volume","ignore"])
+    df = df.astype({
+        "open":"float", "high":"float", "low":"float", "close":"float", "volume":"float"
+    })
+    return df
+
+def plot_chart(df, low, high, title):
+    plt.figure(figsize=(10,5))
+    plt.plot(df["close"], label="Close")
+    plt.axhline(low, color='red', linestyle='--')
+    plt.axhline(high, color='green', linestyle='--')
+    plt.title(title)
+    plt.legend()
     buf = io.BytesIO()
+    plt.tight_layout()
     plt.savefig(buf, format="png")
     buf.seek(0)
-    plt.close(fig)
+    plt.close()
     return buf
 
-def fetch_crypto_ohlc(symbol, tf, limit=8):
-    interval = BINANCE_INTERVALS.get(tf)
-    if not interval:
-        print(f"{ist_now_str()} - Binance invalid interval for {symbol}: {tf}")
-        return pd.DataFrame()
-    try:
-        klines = BINANCE.get_klines(symbol=symbol, interval=interval, limit=limit)
-        data = []
-        for k in klines:
-            data.append({
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-                "time": k[0]
-            })
-        return pd.DataFrame(data)
-    except Exception as e:
-        print(f"{ist_now_str()} - Binance error for {symbol}: {e}")
-        return pd.DataFrame()
-
-def fetch_yf_ohlc(symbol, tf):
-    period = "30d"
-    interval = tf_to_pandas(tf)
-    try:
-        df = yf.download(symbol, period=period, interval=interval, progress=False)
-        if df.empty:
-            return df
-        df = df.rename(columns=str.lower)
-        df["time"] = df.index.view(int) // 10**6
-        return df[["open","high","low","close","volume","time"]]
-    except Exception as e:
-        print(f"{ist_now_str()} - Yahoo error for {symbol}: {e}")
-        return pd.DataFrame()
-
-def fetch_fallback_ohlc(symbol, tf):
-    return pd.DataFrame()
-
-def first_working_ticker(aliases, tf):
-    for alias in aliases:
-        df = fetch_yf_ohlc(alias, tf)
-        if not df.empty:
-            return alias, df
-    return None, None
-
-def scan_market(market_name, symbols_list, timeframes, bot_token, extra_info=""):
-    for symbol in symbols_list:
-        for tf in timeframes:
-            if market_name == "CRYPTO":
-                df = fetch_crypto_ohlc(symbol, tf, limit=8)
-            else:
-                df = fetch_yf_ohlc(symbol, tf)
-            if df.empty or len(df) < 3:
-                continue
-            trig, direction, low, high, last_close, prime, bar_ts = detect_multi_doji_breakout(df)
-            if trig:
-                bar_key = (market_name, symbol, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok(market_name, symbol, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(symbol, tf, direction, low, high, last_close, prime, market_name)
-                    chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
-                    send_telegram(bot_token, [msg], chart_buf)
-            cons, direction, low, high, last_close, bar_ts = detect_consolidation_breakout(df)
-            if cons:
-                bar_key = (market_name+"_CONS", symbol, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok(market_name, symbol, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(symbol, tf, direction, low, high, last_close, False, market_name, special_alert=True)
-                    chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
-                    send_telegram(bot_token, [msg], chart_buf)
-            multi_trig, direction, low, high, last_close, bar_ts = detect_multi_inside_breakout(df)
-            if multi_trig:
-                bar_key = (market_name+"_INSIDE", symbol, tf, bar_ts, direction)
-                if bar_key not in last_bar_key and cooldown_ok(market_name, symbol, tf, direction):
-                    last_bar_key.add(bar_key)
-                    msg = make_msg(symbol, tf, direction, low, high, last_close, False, market_name, special_alert=True)
-                    chart_buf = plot_doji_chart(df, symbol, tf, direction, low, high, last_close)
-                    send_telegram(bot_token, [msg], chart_buf)
+def scan_market(market: str, symbols: list, tfs: list, bot_token: str):
+    for symbol in symbols:
+        for tf in tfs:
+            try:
+                period = "30d" if tf in BIG_TFS else "7d"
+                if market == "CRYPTO":
+                    df = fetch_crypto_ohlc(symbol, tf)
+                else:
+                    df = fetch_stock_ohlc(symbol, tf, period=period)
+                if df.empty or df.isnull().all().all():
+                    print(f"{ist_now_str()} - Skipping {symbol} {tf}, invalid data")
+                    continue
+                for detect_func, name in [
+                    (detect_multi_doji_breakout, "Multi Doji Breakout"),
+                    (detect_consolidation_breakout, "Consolidation Breakout"),
+                    (detect_multi_inside_breakout, "Inside Candle Breakout")
+                ]:
+                    trig, direction, low, high, last_close, prime, bar_ts = detect_func(df)
+                    if trig and cooldown_ok(market, symbol, tf, direction):
+                        msg = f"{name} - {symbol} {tf} {direction}\nPrice: {last_close}\nTime: {ist_now_str()}"
+                        img_buf = plot_chart(df, low, high, f"{symbol} {tf} {name}")
+                        send_telegram(bot_token, [msg], img_buf)
+            except Exception as e:
+                print(f"{ist_now_str()} - Error scanning {symbol} {tf}: {e}")
 
 def scan_crypto():
     print(f"{ist_now_str()} - Scanning crypto market")
@@ -348,22 +268,20 @@ def scan_crypto():
 
 def scan_india():
     print(f"{ist_now_str()} - Scanning stocks")
-    if is_india_market_hours():
-        scan_market("INDIA_STOCKS", TOP15_STOCKS_NS, STOCK_TFS, INDIA_BOT_TOKEN)
-    else:
-        print(f"{ist_now_str()} - India market closed. Skipping.")
-
-def main():
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(scan_crypto, "interval", minutes=5)
-    scheduler.add_job(scan_india, "interval", minutes=5)
-    scheduler.start()
-    print(f"{ist_now_str()} - Bot started")
-    try:
-        while True:
-            time.sleep(1)
-    except (KeyboardInterrupt, SystemExit):
-        scheduler.shutdown()
+    if not is_india_market_hours():
+        print(f"{ist_now_str()} - Market closed")
+        return
+    scan_market("INDIA_STOCKS", TOP15_STOCKS_NS, STOCK_TFS, INDIA_BOT_TOKEN)
 
 if __name__ == "__main__":
-    main()
+    scheduler = BackgroundScheduler(timezone="UTC")
+    scheduler.add_job(scan_crypto, "interval", minutes=5, next_run_time=datetime.now())
+    scheduler.add_job(scan_india, "interval", minutes=5, next_run_time=datetime.now())
+    scheduler.start()
+    print("Scheduler started...")
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        print("Stopping...")
+        scheduler.shutdown()
