@@ -134,7 +134,9 @@ def detect_multi_doji_breakout(df_ohlc: pd.DataFrame):
     prime_found = False
     for i in range(len(candles)-1, -1, -1):
         row = candles.iloc[i]
-        d, p = is_doji(row["open"], row["high"], row["low"], row["close"], row.get("volume"))
+        if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
+            continue
+        d, p = is_doji(row["open"], row["high"], row["low"], row["close"], row.get("volume", None))
         if d:
             doji_indices.append(i)
             if p:
@@ -166,6 +168,8 @@ def detect_consolidation_breakout(df_ohlc: pd.DataFrame):
     low_vals = []
     for i in range(len(candles)-1, -1, -1):
         row = candles.iloc[i]
+        if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
+            continue
         body = abs(row["open"] - row["close"])
         rng = row["high"] - row["low"]
         if rng == 0 or body <= 0.2 * rng:
@@ -198,6 +202,8 @@ def detect_multi_inside_breakout(df_ohlc: pd.DataFrame):
     last_high = breakout_candle["high"]
     for i in range(len(candles)-1, -1, -1):
         row = candles.iloc[i]
+        if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
+            continue
         if row["high"] <= last_high and row["low"] >= last_low:
             inside_count += 1
             last_low = min(last_low, row["low"])
@@ -238,6 +244,8 @@ def plot_doji_chart(df, symbol, tf, direction, low, high, last_close):
     fig, ax = plt.subplots(figsize=(6,4))
     ax.set_title(f"{symbol} {tf} | {direction}", fontsize=10)
     for i, row in df.iterrows():
+        if pd.isna(row["open"]) or pd.isna(row["high"]) or pd.isna(row["low"]) or pd.isna(row["close"]):
+            continue
         color = "green" if row["close"] >= row["open"] else "red"
         ax.plot([i,i],[row["low"], row["high"]], color=color)
         ax.add_patch(plt.Rectangle((i-0.3, min(row["open"], row["close"])),
@@ -339,27 +347,23 @@ def scan_crypto():
     scan_market("CRYPTO", CRYPTO_SYMBOLS, CRYPTO_TFS, CRYPTO_BOT_TOKEN)
 
 def scan_india():
-    if not is_india_market_hours():
-        print(f"{ist_now_str()} - India market closed. Skipping indices and stocks.")
-        return
-    for idx_name, aliases in INDICES_MAP.items():
-        alias, df = first_working_ticker(aliases, INDEX_TFS[0])
-        if alias and not df.empty:
-            print(f"{ist_now_str()} - Scanning index {idx_name} ({alias})")
-            scan_market("INDIA_INDEX", [alias], INDEX_TFS, INDIA_BOT_TOKEN)
     print(f"{ist_now_str()} - Scanning stocks")
-    scan_market("INDIA_STOCKS", TOP15_STOCKS_NS, STOCK_TFS, INDIA_BOT_TOKEN)
+    if is_india_market_hours():
+        scan_market("INDIA_STOCKS", TOP15_STOCKS_NS, STOCK_TFS, INDIA_BOT_TOKEN)
+    else:
+        print(f"{ist_now_str()} - India market closed. Skipping.")
 
-if __name__ == "__main__":
-    print("Starting bot...")
+def main():
     scheduler = BackgroundScheduler()
-    scheduler.add_job(scan_crypto, 'interval', minutes=5, id="scan_crypto")
-    scheduler.add_job(scan_india, 'interval', minutes=5, id="scan_india")
+    scheduler.add_job(scan_crypto, "interval", minutes=5)
+    scheduler.add_job(scan_india, "interval", minutes=5)
     scheduler.start()
-    print("Scheduler started. Press Ctrl+C to exit.")
+    print(f"{ist_now_str()} - Bot started")
     try:
         while True:
-            time.sleep(10)
-    except KeyboardInterrupt:
-        print("Stopping bot...")
+            time.sleep(1)
+    except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
+
+if __name__ == "__main__":
+    main()
