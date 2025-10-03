@@ -5,80 +5,180 @@ import pytz
 import yfinance as yf
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta, timezone
-from binance.client import Client
 from apscheduler.schedulers.background import BackgroundScheduler
 import io
+import logging
 
 # ========================
-# API Keys and Config
+# API Keys
 # ========================
 ALPHA_VANTAGE_KEY = "4BA9H4URO6LTAXY9"
-FINNHUB_KEY = "d304v11r01qnmrsd01k0d304v11r01qnmrsd01kg"
-
-CRYPTO_BOT_TOKEN = "7604294147:AAHRyGR2MX0_wNuQUIr1_QlIrAFc34bxuz8"
-INDIA_BOT_TOKEN = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
-CHAT_IDS = ["1343842801", "1269772473"]  # Replace with your actual Telegram chat IDs
-
-SEPARATOR = "━━━━━━━✦✧✦━━━━━━━"
-IST = timezone(timedelta(hours=5, minutes=30))
-
-print("🚀 Bot file loaded successfully!")
+FINNHUB_KEY = "d304v11r01qnmrsd01k0d304v11r01kg"
+TELEGRAM_TOKEN = "8462939843:AAEvcFCJKaZqTawZKwPyidvDoy4kFO1j6So"
+TELEGRAM_CHAT_ID = "1343842801"
 
 # ========================
-# Telegram Helper
+# Logging setup
 # ========================
-def send_telegram(bot_token: str, messages: list[str], image_buf=None):
-    if not messages:
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+
+# ========================
+# Send Telegram Alert
+# ========================
+def send_telegram_message(msg, image_bytes=None):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+        requests.post(url, data=payload)
+
+        if image_bytes:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+            files = {"photo": image_bytes}
+            data = {"chat_id": TELEGRAM_CHAT_ID}
+            requests.post(url, data=data, files=files)
+    except Exception as e:
+        logging.error(f"Telegram error: {e}")
+
+# ========================
+# Fetch Data Functions
+# ========================
+def fetch_yf_data(symbol, interval="15m", period="5d"):
+    try:
+        df = yf.download(symbol, interval=interval, period=period)
+        if df is not None and not df.empty:
+            df.index = df.index.tz_localize(None)
+            return df
+    except Exception as e:
+        logging.error(f"yfinance error for {symbol}: {e}")
+    return None
+
+def fetch_alpha(symbol, interval="15min"):
+    try:
+        url = f"https://www.alphavantage.co/query"
+        params = {
+            "function": "TIME_SERIES_INTRADAY",
+            "symbol": symbol,
+            "interval": interval,
+            "apikey": ALPHA_VANTAGE_KEY,
+            "datatype": "json"
+        }
+        r = requests.get(url, params=params).json()
+        key = f"Time Series ({interval})"
+        if key in r:
+            df = pd.DataFrame(r[key]).T
+            df = df.rename(columns={
+                "1. open": "Open", "2. high": "High",
+                "3. low": "Low", "4. close": "Close", "5. volume": "Volume"
+            }).astype(float)
+            df.index = pd.to_datetime(df.index)
+            return df.sort_index()
+    except Exception as e:
+        logging.error(f"AlphaVantage error: {e}")
+    return None
+
+def fetch_finnhub(symbol, resolution="15"):
+    try:
+        url = f"https://finnhub.io/api/v1/stock/candle"
+        params = {
+            "symbol": symbol,
+            "resolution": resolution,
+            "count": 200,
+            "token": FINNHUB_KEY
+        }
+        r = requests.get(url, params=params).json()
+        if r and r.get("s") == "ok":
+            df = pd.DataFrame({
+                "Open": r["o"],
+                "High": r["h"],
+                "Low": r["l"],
+                "Close": r["c"],
+                "Volume": r["v"]
+            }, index=pd.to_datetime(r["t"], unit="s"))
+            return df
+    except Exception as e:
+        logging.error(f"Finnhub error: {e}")
+    return None
+
+def fetch_data(symbol, interval="15m"):
+    # Try Yahoo → Alpha → Finnhub
+    df = fetch_yf_data(symbol, interval)
+    if df is None or df.empty:
+        logging.info(f"Yahoo failed for {symbol}, trying Alpha Vantage...")
+        df = fetch_alpha(symbol)
+    if (df is None or df.empty) and not symbol.startswith("^"):  # skip indices for Finnhub
+        logging.info(f"Alpha failed for {symbol}, trying Finnhub...")
+        df = fetch_finnhub(symbol)
+    return df
+
+# ========================
+# Doji Detection
+# ========================
+def is_doji(candle, threshold=0.1):
+    body = abs(candle["Close"] - candle["Open"])
+    rng = candle["High"] - candle["Low"]
+    return rng > 0 and (body / rng) < threshold
+
+def check_doji_breakout(symbol, interval="15m"):
+    df = fetch_data(symbol, interval)
+    if df is None or len(df) < 5:
         return
-    payload = f"\n{SEPARATOR}\n".join(messages)
-    for chat_id in CHAT_IDS:
+
+    last_candle = df.iloc[-1]
+    prev_candle = df.iloc[-2]
+
+    if is_doji(prev_candle):
+        # Breakout condition: price crosses previous Doji high/low
+        if last_candle["High"] > prev_candle["High"]:
+            send_alert(symbol, "Bullish Doji Breakout", df)
+        elif last_candle["Low"] < prev_candle["Low"]:
+            send_alert(symbol, "Bearish Doji Breakout", df)
+
+# ========================
+# Plotting
+# ========================
+def send_alert(symbol, msg, df):
+    logging.info(f"{msg} on {symbol}")
+    text = f"🔥 {msg} 🔥\nSymbol: {symbol}"
+    # Plot last 20 candles
+    plt.figure(figsize=(8, 4))
+    data = df.tail(20)
+    plt.plot(data.index, data["Close"], marker="o")
+    plt.title(f"{symbol} - {msg}")
+    plt.grid(True)
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    send_telegram_message(text, buf)
+    plt.close()
+
+# ========================
+# Main Scheduler
+# ========================
+symbols = [
+    "BTC-USD", "ETH-USD","SOL-USD","BNB-USD","XRP-USD","DOGE-USD",   # Crypto via yfinance
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS",  # Indian stocks
+    "^NSEI", "^NSEBANK"     # Indices (skip Finnhub)
+]
+
+def job():
+    for sym in symbols:
         try:
-            if image_buf:
-                url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-                files = {"photo": ("chart.png", image_buf.getvalue())}
-                data = {"chat_id": chat_id, "caption": payload}
-                resp = requests.post(url, data=data, files=files)
-            else:
-                url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                resp = requests.post(url, json={"chat_id": chat_id, "text": payload})
-            print(f"📨 Telegram send status: {resp.status_code}, response: {resp.text}")
+            check_doji_breakout(sym, "15m")
         except Exception as e:
-            print(f"{datetime.now(IST)} - Telegram error: {e}")
+            logging.error(f"Error on {sym}: {e}")
 
-# ✅ Test Telegram on startup
-def test_telegram():
-    print("🔍 Testing Telegram connection...")
-    send_telegram(CRYPTO_BOT_TOKEN, ["✅ Bot started and Telegram test message (Crypto Token)"])
-    send_telegram(INDIA_BOT_TOKEN, ["✅ Bot started and Telegram test message (India Token)"])
-    print("✔️ Telegram test messages sent. Check your Telegram app now.")
-
-# ========================
-# Market Scan Dummy Example (minimal debug version)
-# ========================
-def scan_crypto():
-    print(f"{datetime.now(IST)} - DEBUG: scan_crypto() executed")
-    send_telegram(CRYPTO_BOT_TOKEN, ["⚡ DEBUG: Crypto scan executed, no alerts yet"])
-
-def scan_india():
-    print(f"{datetime.now(IST)} - DEBUG: scan_india() executed")
-    send_telegram(INDIA_BOT_TOKEN, ["⚡ DEBUG: India scan executed, no alerts yet"])
-
-# ========================
-# MAIN
-# ========================
 if __name__ == "__main__":
-    print("🚀 Starting bot main...")
-    test_telegram()  # <-- This will confirm Telegram works first
-
     scheduler = BackgroundScheduler()
-    scheduler.add_job(scan_crypto, 'interval', minutes=1, id="scan_crypto")  # reduced to 1 min for testing
-    scheduler.add_job(scan_india, 'interval', minutes=1, id="scan_india")
+    scheduler.add_job(job, "interval", minutes=5)
     scheduler.start()
-    print("✅ Scheduler started. Scans will run every 1 minute. Watch console + Telegram.")
 
+    logging.info("🚀 Doji bot started. Press Ctrl+C to exit.")
     try:
         while True:
-            time.sleep(10)
-    except KeyboardInterrupt:
-        print("🛑 Stopping bot...")
+            time.sleep(1)
+    except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
