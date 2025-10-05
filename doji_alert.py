@@ -175,4 +175,4 @@ if __name__ == "__main__":
     scheduler.add_job(scan_crypto, 'interval', minutes=5)
     scheduler.add_job(scan_india, 'interval', minutes=5)
     scheduler.start()
-    print("Scheduler
+    print("Scheduler")
