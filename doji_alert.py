@@ -20,6 +20,7 @@ TF_COOLDOWN_SEC = {
     "1d": 79200, "1w": 561600, "1M": 2505600
 }
 CRYPTO_SYMBOLS = ["bitcoin", "ethereum", "solana", "binancecoin", "ripple", "dogecoin"]
+
 CRYPTO_TFS = ["1d", "7d", "30d"]
 INDICES_MAP = {
     "NIFTY 50": ["^NSEI"],
@@ -116,18 +117,24 @@ def plot_chart(df, symbol, tf, direction, low, high, last_close):
     plt.close(fig)
     return buf
 
-def fetch_crypto_ohlc(symbol, tf):
-    days = {"1d": 1, "7d": 7, "30d": 30}.get(tf, 1)
+def fetch_crypto_ohlc(symbol, tf, limit=8):
+    days_map = {
+        "15m": 1, "1h": 1, "2h": 1, "4h": 1,
+        "1d": 1, "1w": 7, "1M": 30
+    }
+    days = days_map.get(tf, 1)
     url = f"https://api.coingecko.com/api/v3/coins/{symbol}/ohlc?vs_currency=usd&days={days}"
     try:
         res = requests.get(url)
+        res.raise_for_status()
         data = res.json()
-        df = pd.DataFrame(data, columns=["time","open","high","low","close"])
+        df = pd.DataFrame(data, columns=["time", "open", "high", "low", "close"])
         df["time"] = pd.to_datetime(df["time"], unit="ms")
         return df
     except Exception as e:
         print(f"{ist_now_str()} - CoinGecko error for {symbol}: {e}")
         return pd.DataFrame()
+
 
 def fetch_yf_ohlc(symbol, tf):
     try:
