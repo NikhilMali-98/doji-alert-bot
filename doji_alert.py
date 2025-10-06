@@ -21,7 +21,7 @@ TF_COOLDOWN_SEC = {
 }
 CRYPTO_SYMBOLS = ["bitcoin", "ethereum", "solana", "binancecoin", "ripple", "dogecoin"]
 
-CRYPTO_TFS = ["15m", "1h", "4h", "1d", "1w", "30d"]
+CRYPTO_TFS = ["3m", "5m", "15m", "1h", "4h", "1d", "1w", "30d"]
 INDICES_MAP = {
     "NIFTY 50": ["^NSEI"],
     "NIFTY BANK": ["^NSEBANK"]
